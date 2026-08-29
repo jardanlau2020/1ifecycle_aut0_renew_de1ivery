@@ -118,7 +118,7 @@ def _panel_base(platform):
     env_name = f"{platform.upper()}_BASE_URL"
     default = {
         "aclclouds": "https://panel.aclclouds.xyz",
-        "weirdhost": "https://dash.weirdhost.xyz",
+        "weirdhost": "https://hub.weirdhost.xyz",
     }.get(platform, "")
     return _env(env_name, default).rstrip("/")
 
@@ -149,6 +149,12 @@ def _try_renew(platform):
             if code in (200, 201, 204):
                 return {"ok": True, "endpoint": ep, "http": code, "response": body}
             if code in (401, 403):
+                # Check if it's a Cloudflare challenge page
+                body_str = str(body)
+                if "Just a moment" in body_str or "cf-mitigated" in body_str:
+                    return {"ok": False,
+                            "error": "Cloudflare 挑战拦截，需浏览器操作",
+                            "endpoint": ep, "http": code}
                 return {"ok": False, "error": f"Session cookie 无效或已过期 (HTTP {code})",
                         "endpoint": ep}
             if code in (422, 400):
@@ -184,6 +190,11 @@ def _try_start(platform):
             if code in (200, 201, 204):
                 return {"ok": True, "endpoint": ep, "http": code, "response": body}
             if code in (401, 403):
+                body_str = str(body)
+                if "Just a moment" in body_str or "cf-mitigated" in body_str:
+                    return {"ok": False,
+                            "error": "Cloudflare 挑战拦截，需浏览器操作",
+                            "endpoint": ep, "http": code}
                 return {"ok": False, "error": f"Session cookie 无效 (HTTP {code})", "endpoint": ep}
         except urllib.error.HTTPError as e:
             if e.code in (301, 302, 303, 307, 308):
