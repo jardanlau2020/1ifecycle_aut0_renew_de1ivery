@@ -8,7 +8,7 @@
 |------|:------:|:----:|------|
 | Monkey Network | 14 天 → +15 天 | ✅ | Pterodactyl Client API，每日自动检查并 Confirm |
 | Weirdhost | 7 天 → +15 天 | ✅ | Selenium 浏览器自动化，绕过 Cloudflare Turnstile |
-| ACLClouds | 未知 | ❌ | Laravel SPA，API 不可达，需浏览器手动操作 |
+| ACLClouds | 4 天 → +4 天 | ✅ | Selenium + Chromium，CDP 设 Cookie，每 12 小时检查 |
 | host2play | ~8 小时 | ⚫ | 已暂弃 |
 | zenode.fr | 无 | ❌ | 无 SLA，无已知续期机制 |
 
@@ -38,12 +38,26 @@ SeleniumBase + Xvfb + remember_web Cookie
 
 使用 `WEIRDHOST_COOKIE_1` Secret（Laravel `remember_web_` Cookie）。
 
+### ACLClouds — `aclclouds-renew.yml`
+
+```python
+# 每 12 小时
+Selenium + Chromium + CDP Cookie
+  → 浏览器访问 aclclouds.com/server/f743cf50
+  → 读取 Temps restant（剩余时间）
+  → 窗口开启时（≤2 天）点击 Renouveler
+  → +4 天
+```
+
+使用 `ACLCLOUDS_SESSION_COOKIE` Secret（Laravel `__Host-aclclouds_session` Cookie）。
+
 ## Secrets 清单
 
 | Secret | 用途 |
 |--------|------|
 | `MONKEY_API_KEY` | Monkey Network API 认证 |
 | `WEIRDHOST_COOKIE_1` | Weirdhost 登录 Cookie |
+| `ACLCLOUDS_SESSION_COOKIE` | ACLClouds 登录 Cookie |
 | `TG_BOT_TOKEN` | Telegram 通知 Bot Token |
 | `TG_CHAT_ID` | Telegram 通知 Chat ID |
 
@@ -55,6 +69,9 @@ MONKEY_API_KEY=*** bash scripts/check_and_renew.sh
 
 # Weirdhost 续期
 python scripts/weirdhost_renew.py
+
+# ACLClouds 续期
+ACLCLOUDS_SESSION_COOKIE=*** python3 scripts/aclclouds_renew.py
 ```
 
 ## 安全
