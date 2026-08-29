@@ -279,13 +279,10 @@ def weirdhost():
     return result
 
 
-# ── Health check ────────────────────────────────────────────────────────────
+# ── Health check (unused; Wasmer is PaaS, manages its own health) ────────────
 def health(name, url):
-    try:
-        code, body = request_json(url)
-        return {"platform": name, "ok": code == 200, "http": code, "response": body}
-    except Exception as e:
-        return {"platform": name, "ok": False, "error": str(e)}
+    """Placeholder — Wasmer health check removed; platform manages its own health."""
+    return {"platform": name, "ok": None, "note": "已移除，Wasmer 平台自行管理"}
 
 
 # ── Main ────────────────────────────────────────────────────────────────────
@@ -305,20 +302,14 @@ def main():
     critical_fail = False
     for r in results:
         pname = r.get("platform", "?")
-        # Separate renewal results from health check results
         is_renewal = "renew" in r or "start" in r or "lifecycle" in r or "confirm" in r
-        is_health = "http" in r and "renew" not in r and "start" not in r
 
         if r.get("ok"):
-            label = "续期" if is_renewal else "健康"
-            lines.append(f"  ✅ {pname} ({label})")
+            lines.append(f"  ✅ {pname} 续期成功")
         else:
             err = r.get("error", r.get("confirm", {}).get("error", "未知错误"))
             if pname in MANUAL_ONLY and is_renewal:
                 lines.append(f"  ⚠️ {pname}: {err} <i>(手动平台，需浏览器操作)</i>")
-            elif is_health:
-                critical_fail = True
-                lines.append(f"  ❌ {pname} 健康检查失败: {err}")
             else:
                 critical_fail = True
                 lines.append(f"  ❌ {pname}: {err}")
