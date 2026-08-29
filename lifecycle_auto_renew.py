@@ -288,12 +288,6 @@ def health(name, url):
         return {"platform": name, "ok": False, "error": str(e)}
 
 
-def wasmer_health():
-    """Check Wasmer deployment health."""
-    url = _env("WASMER_HEALTH_URL", "https://wx-node-test.wasmer.app/health")
-    return health("wasmer", url)
-
-
 # ── Main ────────────────────────────────────────────────────────────────────
 # Platforms that are known to require manual browser action
 MANUAL_ONLY = {"aclclouds", "weirdhost"}
@@ -301,9 +295,6 @@ MANUAL_ONLY = {"aclclouds", "weirdhost"}
 
 def main():
     results = [monkey(), aclclouds(), weirdhost()]
-    acl = _env("ACLCLOUDS_HEALTH_URL", "http://141.11.237.77:30551/health")
-    results.append(health("aclclouds", acl))
-    results.append(wasmer_health())
 
     now = datetime.now(timezone.utc)
     report = {"checked_at": now.isoformat(), "results": results}
