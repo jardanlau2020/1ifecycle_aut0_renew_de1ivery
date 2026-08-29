@@ -226,11 +226,23 @@ def _try_start(platform):
 
 
 def aclclouds():
-    """ACLClouds: renew + start using session cookie."""
+    """ACLClouds: renew + start using session cookie.
+
+    Panel: https://aclclouds.com (Laravel SPA + Sanctum)
+    Cookie name: __Host-aclclouds_session
+    Server URL: /server/{id}
+
+    Known limitations:
+    - Session cookie authenticates web SPA but NOT the Laravel API (401 Unauthenticated)
+    - Sanctum CSRF endpoint blocked by Cloudflare (403)
+    - API endpoints for renew/start are SPA routes (return HTML shell, not JSON)
+    - Panel is NOT Pterodactyl-based; API paths differ from standard /api/client/servers/{id}
+    - Manual browser renew required until proper API token is available
+    """
     cookie, cname = _panel_session("aclclouds")
     if not cookie:
         return {"platform": "aclclouds", "ok": False, "error": "ACLCLOUDS_SESSION_COOKIE 未设置"}
-    result = {"platform": "aclclouds", "cookie_name": cname}
+    result = {"platform": "aclclouds", "cookie_name": cname, "panel_url": "https://aclclouds.com"}
     renew = _try_renew("aclclouds")
     result["renew"] = renew
     if renew.get("ok"):
@@ -240,6 +252,12 @@ def aclclouds():
         result["ok"] = start.get("ok", False)
     else:
         result["ok"] = False
+        # Add helpful context based on common error patterns
+        err = renew.get("error", "")
+        if "401" in err or "Unauthenticated" in err:
+            result["hint"] = "Session cookie 无法认证 API（Laravel Sanctum SPA 模式），需浏览器手动操作或提供 API token"
+        elif "404" in err:
+            result["hint"] = "API 路径不存在，面板非 Pterodactyl 格式，续期端点与标准 /api/client/servers/{id}/renew 不同"
     return result
 
 
