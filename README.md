@@ -1,26 +1,64 @@
-# 通用续期/状态监控交付包
+# Lifecycle Auto Renew
 
-## 能做什么
-- Monkey Network：用 Pterodactyl Client API 检查账号与服务器是否可见、记录服务器状态；当前 API 没有续期 endpoint，因此输出手动续期提醒。
-- ACLClouds：检查公开 `/health`，确认天气 Worker 是否存活。
-- 不绕过 CAPTCHA/Turnstile，不自动点击网页 Renew，不硬编码凭证。
+自动续期系统 — 为免费云平台做 lifecycle 续期，防止到期关机。
 
-## 环境变量
+## 平台续期矩阵
+
+| 平台 | 续期周期 | 自动化 | 说明 |
+|------|:------:|:----:|------|
+| Monkey Network | 14 天 → +15 天 | ✅ | Pterodactyl Client API，每日自动检查并 Confirm |
+| Weirdhost | 7 天 → +15 天 | ✅ | Selenium 浏览器自动化，绕过 Cloudflare Turnstile |
+| ACLClouds | 未知 | ❌ | Laravel SPA，API 不可达，需浏览器手动操作 |
+| host2play | ~8 小时 | ⚫ | 已暂弃 |
+| zenode.fr | 无 | ❌ | 无 SLA，无已知续期机制 |
+
+## 自动续期原理
+
+### Monkey Network — `monkey-renew.yml`
+
 ```bash
-export MONKEY_API_KEY='替换成新生成的 key'
-export MONKEY_SERVER_IDENTIFIER='2533c753'
-export ACLCLOUDS_HEALTH_URL='http://141.11.237.77:30551/health'
-python3 lifecycle_renewal_monitor.py
+# 每日 10:00 UTC (18:00 北京时间)
+GET  /api/client/servers/{id}/lifecycle
+  → can_confirm=true 时
+POST /api/client/servers/{id}/lifecycle/confirm  (+15 天)
 ```
 
-API key 必须通过环境变量注入，不要写进文件、GitHub 日志或聊天。
+使用 `MONKEY_API_KEY` Secret，服务器 ID `2533c753`。
 
-## 结果含义
-- Monkey `api_ok=true` 且 `ok=true`：API 与服务器可见。
-- ACLClouds HTTP 200：阿勒泰 Worker 健康端点正常。
-- 续期仍须在各平台面板手动确认，因为当前已知 API 没有续期接口。
+### Weirdhost — `weirdhost-auto-renew.yml`
 
-## 周期建议
-- ACLClouds：每 2 日检查/提醒一次（现有 QwenPaw 提醒已建立）。
-- Monkey Network：每日检查一次；到期规则确认后再调整。
-- Weirdhost：保留现有每周提醒，剩余 7 日时 Confirm 增加 15 日。
+```python
+# 每日 04:20 UTC (12:20 北京时间)
+SeleniumBase + Xvfb + remember_web Cookie
+  → 浏览器访问 hub.weirdhost.xyz
+  → 绕过 Cloudflare Turnstile
+  → 点击续期按钮
+  → 验证结果
+```
+
+使用 `WEIRDHOST_COOKIE_1` Secret（Laravel `remember_web_` Cookie）。
+
+## Secrets 清单
+
+| Secret | 用途 |
+|--------|------|
+| `MONKEY_API_KEY` | Monkey Network API 认证 |
+| `WEIRDHOST_COOKIE_1` | Weirdhost 登录 Cookie |
+| `TG_BOT_TOKEN` | Telegram 通知 Bot Token |
+| `TG_CHAT_ID` | Telegram 通知 Chat ID |
+
+## 手动触发
+
+```bash
+# Monkey 续期
+MONKEY_API_KEY=*** bash scripts/check_and_renew.sh
+
+# Weirdhost 续期
+python scripts/weirdhost_renew.py
+```
+
+## 安全
+
+- API Key / Cookie 全部走 GitHub Secrets，不写入代码
+- 不绕过 CAPTCHA，遇到验证就停止并报告
+- 曾暴露的凭证视为已泄露，建议轮换
