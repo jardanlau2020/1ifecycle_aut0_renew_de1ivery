@@ -94,7 +94,10 @@ def monkey():
 def _panel_session(platform):
     """Build a Cookie header from the platform session secret + known cookie name."""
     cookie = _env(f"{platform.upper()}_SESSION_COOKIE")
-    cname = _env(f"{platform.upper()}_COOKIE_NAME", "laravel_session")
+    cname = _env(f"{platform.upper()}_COOKIE_NAME", {
+        "aclclouds": "__Host-aclclouds_session",
+        "weirdhost": "laravel_session",
+    }.get(platform, "laravel_session"))
     if not cookie:
         return None, None
     return f"{cname}={cookie}", cname
@@ -117,7 +120,7 @@ def _panel_headers(platform, extra=None):
 def _panel_base(platform):
     env_name = f"{platform.upper()}_BASE_URL"
     default = {
-        "aclclouds": "https://panel.aclclouds.xyz",
+        "aclclouds": "https://aclclouds.com",
         "weirdhost": "https://hub.weirdhost.xyz",
     }.get(platform, "")
     return _env(env_name, default).rstrip("/")
