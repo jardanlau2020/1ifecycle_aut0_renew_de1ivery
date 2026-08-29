@@ -1,7 +1,7 @@
 name: Lifecycle Auto Renew
 on:
   schedule:
-    - cron: '17 */6 * * *'
+    - cron: '0 8 * * *'
   workflow_dispatch:
 permissions:
   contents: read
@@ -27,4 +27,5 @@ jobs:
           WEIRDHOST_SERVER_ID: ${{ secrets.WEIRDHOST_SERVER_ID }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WASMER_HEALTH_URL: ${{ secrets.WASMER_HEALTH_URL }}
         run: python3 lifecycle_auto_renew.py
