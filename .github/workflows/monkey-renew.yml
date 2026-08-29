@@ -1,0 +1,20 @@
+name: MonkeyBytes Auto Renew
+
+on:
+  schedule:
+    # 每日 10:00 UTC = 18:00 香港時間（15 日週期 + 7 日窗口，每日檢查綽綽有餘）
+    - cron: "0 10 * * *"
+  workflow_dispatch: # 喺 Actions 分頁可以手動觸發
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run renewal script
+        env:
+          MONKEY_API_KEY: ${{ secrets.MONKEY_API_KEY }}
+          SERVER_ID: "2533c753"
+        run: bash check_and_renew.sh
