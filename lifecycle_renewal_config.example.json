@@ -1,0 +1,28 @@
+{
+  "timezone": "Asia/Shanghai",
+  "platforms": {
+    "aclclouds": {
+      "renewal_type": "manual_confirmation",
+      "period_days": 4,
+      "renewal_window_days_before_expiry": 2,
+      "action": "面板中手动 Renew，再确认 Start",
+      "automation": "reminder_only"
+    },
+    "monkey-network": {
+      "renewal_type": "unknown",
+      "action": "先确认平台续期按钮/API与登录方式，再决定提醒周期",
+      "automation": "disabled_until_verified"
+    },
+    "weirdhost": {
+      "renewal_type": "manual_confirmation",
+      "confirm_when_days_remaining": 7,
+      "extension_days": 15,
+      "automation": "existing_weekly_reminder"
+    },
+    "bot-hosting": {
+      "renewal_type": "manual_confirmation",
+      "period_days": 4,
+      "automation": "existing_3_day_reminder"
+    }
+  }
+}
