@@ -15,5 +15,16 @@ jobs:
         env:
           MONKEY_API_KEY: ${{ secrets.MONKEY_API_KEY }}
           MONKEY_SERVER_IDENTIFIER: ${{ secrets.MONKEY_SERVER_IDENTIFIER }}
+          MONKEY_API_BASE: ${{ secrets.MONKEY_API_BASE }}
+          ACLCLOUDS_SESSION_COOKIE: ${{ secrets.ACLCLOUDS_SESSION_COOKIE }}
+          ACLCLOUDS_COOKIE_NAME: ${{ secrets.ACLCLOUDS_COOKIE_NAME }}
+          ACLCLOUDS_BASE_URL: ${{ secrets.ACLCLOUDS_BASE_URL }}
+          ACLCLOUDS_SERVER_ID: ${{ secrets.ACLCLOUDS_SERVER_ID }}
           ACLCLOUDS_HEALTH_URL: ${{ secrets.ACLCLOUDS_HEALTH_URL }}
+          WEIRDHOST_SESSION_COOKIE: ${{ secrets.WEIRDHOST_SESSION_COOKIE }}
+          WEIRDHOST_COOKIE_NAME: ${{ secrets.WEIRDHOST_COOKIE_NAME }}
+          WEIRDHOST_BASE_URL: ${{ secrets.WEIRDHOST_BASE_URL }}
+          WEIRDHOST_SERVER_ID: ${{ secrets.WEIRDHOST_SERVER_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python3 lifecycle_auto_renew.py
