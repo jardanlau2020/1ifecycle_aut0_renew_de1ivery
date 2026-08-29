@@ -164,6 +164,15 @@ def _try_renew(platform):
             if e.code in (301, 302, 303, 307, 308):
                 return {"ok": False, "error": "面板重定向，需浏览器操作",
                         "endpoint": ep, "http": e.code}
+            # Check for Cloudflare challenge in error body
+            try:
+                err_body = e.read().decode("utf-8", "replace")
+                if "Just a moment" in err_body or "cf-mitigated" in err_body:
+                    return {"ok": False,
+                            "error": "Cloudflare 挑战拦截，需浏览器操作",
+                            "endpoint": ep, "http": e.code}
+            except Exception:
+                pass
             return {"ok": False, "error": f"HTTP {e.code}",
                     "endpoint": ep}
         except Exception as e:
@@ -199,6 +208,14 @@ def _try_start(platform):
         except urllib.error.HTTPError as e:
             if e.code in (301, 302, 303, 307, 308):
                 return {"ok": False, "error": "面板重定向，需浏览器操作", "endpoint": ep}
+            try:
+                err_body = e.read().decode("utf-8", "replace")
+                if "Just a moment" in err_body or "cf-mitigated" in err_body:
+                    return {"ok": False,
+                            "error": "Cloudflare 挑战拦截，需浏览器操作",
+                            "endpoint": ep, "http": e.code}
+            except Exception:
+                pass
             return {"ok": False, "error": f"HTTP {e.code}", "endpoint": ep}
         except Exception as e:
             return {"ok": False, "error": str(e), "endpoint": ep}
