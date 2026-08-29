@@ -289,6 +289,10 @@ def health(name, url):
 
 
 # ── Main ────────────────────────────────────────────────────────────────────
+# Platforms that are known to require manual browser action
+MANUAL_ONLY = {"aclclouds", "weirdhost"}
+
+
 def main():
     results = [monkey(), aclclouds(), weirdhost()]
     acl = _env("ACLCLOUDS_HEALTH_URL", "http://141.11.237.77:30551/health")
@@ -300,24 +304,28 @@ def main():
 
     # ── Telegram notification ──
     lines = [f"🔔 <b>生命周期检查</b> · {now.strftime('%m-%d %H:%M UTC')}"]
-    all_ok = True
+    critical_fail = False
     for r in results:
         pname = r.get("platform", "?")
         if r.get("ok"):
             lines.append(f"  ✅ {pname}")
         else:
-            all_ok = False
             err = r.get("error", r.get("confirm", {}).get("error", "未知错误"))
-            lines.append(f"  ❌ {pname}: {err}")
+            if pname in MANUAL_ONLY:
+                lines.append(f"  ⚠️ {pname}: {err} <i>(手动平台，需浏览器操作)</i>")
+            else:
+                critical_fail = True
+                lines.append(f"  ❌ {pname}: {err}")
 
-    if all_ok:
-        lines.append("\n✅ 全部平台正常")
+    if critical_fail:
+        lines.append("\n🔴 自动平台存在故障，请立即检查！")
     else:
-        lines.append("\n⚠️ 存在异常，请检查")
+        lines.append("\n✅ 自动平台正常（手动平台需你自行浏览器操作）")
 
     tg_report(lines)
 
-    if not all_ok:
+    # Only exit with error if an auto-capable platform fails
+    if critical_fail:
         sys.exit(2)
 
 
