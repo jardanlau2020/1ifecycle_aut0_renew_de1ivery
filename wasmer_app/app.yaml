@@ -1,0 +1,17 @@
+kind: wasmer.io/App.v0
+name: wx-node-test
+owner: jardanlau
+package: .
+app_id: da_KgYIZt9Ubp0j
+annotations:
+  anybuild.run/config:
+    commands:
+      start: python src/main.py
+    name: out
+    python_cross_platform: wasix_wasm32
+    python_extra_index_url: https://python-registry.wasix.org/simple
+    python_install_inputs: []
+    python_main_file: src/main.py
+  anybuild.run/provider: python
+  anybuild.run/version: 0.28.0
+  wasmer.io/version: 7.3.0
