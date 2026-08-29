@@ -11,16 +11,6 @@ jobs:
     timeout-minutes: 3
     steps:
       - uses: actions/checkout@v4
-      - name: Check ACLClouds health
-        env:
-          ACLCLOUDS_HEALTH_URL: ${{ secrets.ACLCLOUDS_HEALTH_URL }}
-        run: |
-          set -e
-          URL="${ACLCLOUDS_HEALTH_URL:-http://141.11.237.77:30551/health}"
-          echo "Checking: $URL"
-          curl --fail --silent --show-error --max-time 20 "$URL"
-          echo ''
-          echo '✅ ACLClouds health check passed'
       - name: Check Wasmer health
         run: |
           set -e
