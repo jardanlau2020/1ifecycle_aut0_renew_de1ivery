@@ -14,9 +14,16 @@ import json, os, sys, urllib.request, urllib.error, urllib.parse, time
 from datetime import datetime, timezone
 
 
+# ── Helpers ─────────────────────────────────────────────────────────────────
+def _env(key, default=""):
+    """Return env var, treating empty string as unset."""
+    v = os.getenv(key)
+    return v if v else default
+
+
 # ── Telegram ────────────────────────────────────────────────────────────────
-TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TG_CHAT  = os.getenv("TELEGRAM_CHAT_ID", "")
+TG_TOKEN = _env("TELEGRAM_BOT_TOKEN")
+TG_CHAT  = _env("TELEGRAM_CHAT_ID")
 TG_OK = bool(TG_TOKEN and TG_CHAT)
 
 def tg_send(text):
@@ -52,29 +59,11 @@ def request_json(url, method="GET", headers=None, body=None, timeout=25):
         return r.status, (json.loads(raw) if raw else {})
 
 
-def request_raw(url, method="GET", headers=None, body=None, timeout=25,
-                allow_redirects=True):
-    """Like request_json but returns raw text / response, following redirects."""
-    if not allow_redirects:
-        class NoRedirect(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, req, fp, code, msg, hdrs, newurl):
-                return None
-        opener = urllib.request.build_opener(NoRedirect)
-        resp = opener.open(urllib.request.Request(
-            url, method=method, headers=headers or {},
-            data=body.encode() if body else None), timeout=timeout)
-        return resp.status, resp.read().decode("utf-8", "replace")
-    req = urllib.request.Request(url, method=method, headers=headers or {},
-                                 data=body.encode() if body else None)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.status, r.read().decode("utf-8", "replace")
-
-
 # ── Monkey Network ──────────────────────────────────────────────────────────
 def monkey():
-    base = os.getenv("MONKEY_API_BASE", "https://dash.monkey-network.xyz/api/client").rstrip("/")
-    key = os.getenv("MONKEY_API_KEY")
-    sid = os.getenv("MONKEY_SERVER_IDENTIFIER", "2533c753")
+    base = _env("MONKEY_API_BASE", "https://dash.monkey-network.xyz/api/client").rstrip("/")
+    key = _env("MONKEY_API_KEY")
+    sid = _env("MONKEY_SERVER_IDENTIFIER", "2533c753")
     if not key:
         return {"platform": "monkey-network", "ok": False, "error": "MONKEY_API_KEY missing"}
     h = {"Authorization": "Bearer " + key,
@@ -101,11 +90,11 @@ def monkey():
     return out
 
 
-# ── ACLClouds (session-cookie auto-renewal) ─────────────────────────────────
+# ── ACLClouds / Weirdhost (session-cookie auto-renewal) ─────────────────────
 def _panel_session(platform):
     """Build a Cookie header from the platform session secret + known cookie name."""
-    cookie = os.getenv(f"{platform.upper()}_SESSION_COOKIE", "")
-    cname = os.getenv(f"{platform.upper()}_COOKIE_NAME", "laravel_session")
+    cookie = _env(f"{platform.upper()}_SESSION_COOKIE")
+    cname = _env(f"{platform.upper()}_COOKIE_NAME", "laravel_session")
     if not cookie:
         return None, None
     return f"{cname}={cookie}", cname
@@ -131,11 +120,11 @@ def _panel_base(platform):
         "aclclouds": "https://panel.aclclouds.xyz",
         "weirdhost": "https://dash.weirdhost.xyz",
     }.get(platform, "")
-    return os.getenv(env_name, default).rstrip("/")
+    return _env(env_name, default).rstrip("/")
 
 
 def _panel_server_id(platform):
-    return os.getenv(f"{platform.upper()}_SERVER_ID", "")
+    return _env(f"{platform.upper()}_SERVER_ID")
 
 
 def _try_renew(platform):
@@ -167,7 +156,6 @@ def _try_renew(platform):
                         "endpoint": ep}
         except urllib.error.HTTPError as e:
             if e.code in (301, 302, 303, 307, 308):
-                # Redirect — panel may require browser flow
                 return {"ok": False, "error": "面板重定向，需浏览器操作",
                         "endpoint": ep, "http": e.code}
             return {"ok": False, "error": f"HTTP {e.code}",
@@ -215,7 +203,6 @@ def aclclouds():
     renew = _try_renew("aclclouds")
     result["renew"] = renew
     if renew.get("ok"):
-        # Wait a moment then start
         time.sleep(2)
         start = _try_start("aclclouds")
         result["start"] = start
@@ -255,7 +242,7 @@ def health(name, url):
 # ── Main ────────────────────────────────────────────────────────────────────
 def main():
     results = [monkey(), aclclouds(), weirdhost()]
-    acl = os.getenv("ACLCLOUDS_HEALTH_URL", "http://141.11.237.77:30551/health")
+    acl = _env("ACLCLOUDS_HEALTH_URL", "http://141.11.237.77:30551/health")
     results.append(health("aclclouds", acl))
 
     now = datetime.now(timezone.utc)
