@@ -189,13 +189,10 @@ def do_renew():
 
             if "login" in title3.lower() or "sign-in" in title3.lower():
                 log("❌ 登录失败，仍在登录页")
-                # Dump HTML for debugging
                 try:
                     html = sb.get_html()
                     with open("/tmp/h2p_login_failed.html", "w") as f:
                         f.write(html)
-                    log("📄 登录失败页面 HTML 已保存")
-                    # Look for error messages
                     for keyword in ["error", "invalid", "wrong", "incorrect", "failed", "captcha", "verified"]:
                         if keyword.lower() in html.lower():
                             for line in html.split("\n"):
@@ -204,6 +201,15 @@ def do_renew():
                 except Exception:
                     pass
                 return False
+
+            # 检查 cookies
+            try:
+                cookies = sb.get_cookies()
+                log(f"🍪 Cookie 数量: {len(cookies)}")
+                for c in cookies[:5]:
+                    log(f"   {c.get('name','')}: {c.get('value','')[:30]}...")
+            except Exception as e:
+                log(f"   Cookie 获取失败: {e}")
 
             log("✅ 登录成功")
 
