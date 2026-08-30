@@ -187,8 +187,22 @@ def do_renew():
             title3 = sb.get_title()
             log(f"📄 当前页面: {title3}")
 
-            if "sign-in" in sb.get_current_url().lower() or "login" in title3.lower():
+            if "login" in title3.lower() or "sign-in" in title3.lower():
                 log("❌ 登录失败，仍在登录页")
+                # Dump HTML for debugging
+                try:
+                    html = sb.get_html()
+                    with open("/tmp/h2p_login_failed.html", "w") as f:
+                        f.write(html)
+                    log("📄 登录失败页面 HTML 已保存")
+                    # Look for error messages
+                    for keyword in ["error", "invalid", "wrong", "incorrect", "failed", "captcha", "verified"]:
+                        if keyword.lower() in html.lower():
+                            for line in html.split("\n"):
+                                if keyword.lower() in line.lower() and ("alert" in line.lower() or "error" in line.lower() or "class" in line.lower()):
+                                    log(f"   ⚠️ {line.strip()[:200]}")
+                except Exception:
+                    pass
                 return False
 
             log("✅ 登录成功")
