@@ -213,7 +213,7 @@ def do_renew():
 
             log("✅ 登录成功")
 
-            # 跳转到面板 - 先尝试多种 URL
+            # 跳转到面板 - 使用 sb.get_url 维持 session
             panel_urls = [
                 f"{BASE_URL}/panel/server/{SERVER_ID}",
                 f"{BASE_URL}/panel/servers/{SERVER_ID}",
