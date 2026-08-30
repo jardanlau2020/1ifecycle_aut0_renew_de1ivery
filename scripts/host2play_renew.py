@@ -82,10 +82,41 @@ def do_renew():
                 log("❌ Cloudflare 验证未通过，无法继续")
                 return False
 
-            # 尝试登录
+            # Dump page HTML for debugging
+            try:
+                html = sb.get_html()
+                with open("/tmp/h2p_page.html", "w") as f:
+                    f.write(html)
+                log("📄 页面 HTML 已保存到 /tmp/h2p_page.html")
+            except Exception:
+                pass
+
+            # 尝试登录 - 先 dump HTML 找按钮
             log("🔑 尝试登录...")
-            sb.click('a[href*="login"], a[href*="signin"], .login-btn, #login-btn')
-            time.sleep(2)
+
+            # 先 dump 页面 HTML 用于分析
+            try:
+                html = sb.get_html()
+                with open("/tmp/h2p_page.html", "w") as f:
+                    f.write(html)
+                log("📄 页面 HTML 已保存")
+                # 搜索登录相关元素
+                for keyword in ["login", "signin", "sign-in", "Login", "Sign In", "登录", "account", "panel"]:
+                    if keyword.lower() in html.lower():
+                        # 找到包含 keyword 的行
+                        for line in html.split("\n"):
+                            if keyword.lower() in line.lower() and ("href" in line.lower() or "button" in line.lower() or "class" in line.lower()):
+                                log(f"   🔍 找到: {line.strip()[:200]}")
+            except Exception as e:
+                log(f"   HTML dump 失败: {e}")
+
+            # 直接尝试访问 /login
+            log("🔑 直接访问 /login 页面...")
+            sb.open(f"{BASE_URL}/login")
+            time.sleep(3)
+
+            title2 = sb.get_title()
+            log(f"📄 登录页标题: {title2}")
 
             sb.type('input[type="email"], input[name="email"], #email', USERNAME)
             sb.type('input[type="password"], input[name="password"], #password', PASSWORD)
