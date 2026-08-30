@@ -245,6 +245,11 @@ def do_renew():
                         if en.lower() in html.lower():
                             count = html.lower().count(en.lower())
                             log(f"   📊 '{en}'({cn}) 出现 {count} 次")
+                            # Print context around first match
+                            idx = html.lower().find(en.lower())
+                            if idx >= 0:
+                                snippet = html[max(0,idx-50):idx+100].replace('\n',' ').strip()
+                                log(f"   📋 上下文: ...{snippet}...")
                 except Exception as e:
                     log(f"   HTML dump 失败: {e}")
 
