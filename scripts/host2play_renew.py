@@ -27,8 +27,8 @@ SERVER_ID     = os.environ.get("H2P_SERVER_ID", "mcf7022")
 PANEL_URL     = f"{BASE_URL}/server/{SERVER_ID}"
 USERNAME      = os.environ.get("H2P_USERNAME", "")
 PASSWORD      = os.environ.get("H2P_PASSWORD", "")
-TG_BOT_TOKEN  = os.environ.get("TG_BOT_TOKEN", "")
-TG_CHAT_ID    = os.environ.get("TG_CHAT_ID", "")
+TG_BOT_TOKEN  = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TG_CHAT_ID    = os.environ.get("TELEGRAM_CHAT_ID", "")
 RENEW_BEFORE_H = int(os.environ.get("RENEW_BEFORE_H", "2"))  # 到期前 2 小时续期
 
 # ── 日志 ──────────────────────────────────────────────

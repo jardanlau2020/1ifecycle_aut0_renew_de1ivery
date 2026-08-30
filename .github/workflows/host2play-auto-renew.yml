@@ -34,7 +34,7 @@ jobs:
           H2P_USERNAME: ${{ secrets.H2P_USERNAME }}
           H2P_PASSWORD: ${{ secrets.H2P_PASSWORD }}
           H2P_SERVER_ID: ${{ secrets.H2P_SERVER_ID }}
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python3 scripts/host2play_renew.py
