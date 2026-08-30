@@ -237,11 +237,9 @@ def do_renew():
                     with open("/tmp/h2p_panel.html", "w") as f:
                         f.write(html)
                     log("   📄 面板 HTML 已保存")
-                    # Search for all buttons/links
                     btn_patterns = [
                         ("renew", "续期"), ("extend", "延长"), ("start", "启动"),
                         ("stop", "停止"), ("restart", "重启"), ("delete", "删除"),
-                        ("suspend", "暂停"), ("terminate", "终止"),
                     ]
                     for en, cn in btn_patterns:
                         if en.lower() in html.lower():
@@ -250,7 +248,7 @@ def do_renew():
                 except Exception as e:
                     log(f"   HTML dump 失败: {e}")
 
-                # 尝试查找续期/Extend 按钮 - 扩展选择器
+                # 尝试查找续期/Extend 按钮
                 renew_selectors = [
                     "//button[contains(text(), 'Renew')]",
                     "//button[contains(text(), 'renew')]",
@@ -266,7 +264,6 @@ def do_renew():
                     "[class*='extend']",
                     "[class*='Renew']",
                     "[class*='Extend']",
-                    "[class*='renewal']",
                     "[class*='renewal']",
                 ]
 
@@ -284,28 +281,47 @@ def do_renew():
                     break
 
             if not found_renew:
-                log("⚠️ 未找到续期按钮，尝试 Start 按钮代替...")
-                # 尝试直接点 Start（可能服务器已过期需要先续期再启动）
-                for panel_url in panel_urls:
+                log("⚠️ 未找到续期按钮，尝试更多面板 URL...")
+                extra_urls = [
+                    f"{BASE_URL}/panel/server/{SERVER_ID}/dashboard",
+                    f"{BASE_URL}/panel/server/{SERVER_ID}/manage",
+                    f"{BASE_URL}/panel/server/{SERVER_ID}/control",
+                    f"{BASE_URL}/panel/server/{SERVER_ID}/settings",
+                    f"{BASE_URL}/server/{SERVER_ID}",
+                    f"{BASE_URL}/servers/{SERVER_ID}",
+                    f"{BASE_URL}/server/{SERVER_ID}/manage",
+                ]
+                for panel_url in extra_urls:
+                    log(f"🌐 尝试: {panel_url}")
                     sb.open(panel_url)
                     time.sleep(2)
                     title4 = sb.get_title()
+                    log(f"   标题: {title4}")
                     if "login" in title4.lower():
                         continue
 
-                    start_selectors = [
+                    all_selectors = [
+                        "//button[contains(text(), 'Renew')]",
+                        "//button[contains(text(), 'renew')]",
+                        "//button[contains(text(), 'Extend')]",
+                        "//button[contains(text(), 'extend')]",
                         "//button[contains(text(), 'Start')]",
                         "//button[contains(text(), 'start')]",
+                        "//a[contains(text(), 'Renew')]",
+                        "//a[contains(text(), 'Extend')",
+                        "button:contains('Renew')",
+                        "button:contains('Extend')",
                         "button:contains('Start')",
+                        "[class*='renew']",
+                        "[class*='extend']",
                         "[class*='start']",
-                        "[class*='Start']",
                     ]
-                    for sel in start_selectors:
+                    for sel in all_selectors:
                         try:
                             sb.click(sel, timeout=2)
-                            log(f"✅ 点击了 Start: {sel} @ {panel_url}")
-                            time.sleep(2)
+                            log(f"✅ 点击了: {sel} @ {panel_url}")
                             found_renew = True
+                            time.sleep(2)
                             break
                         except Exception:
                             continue
@@ -338,6 +354,10 @@ def do_renew():
 
             if not start_clicked:
                 log("⚠️ 未找到 Start 按钮，继续...")
+
+            if not found_renew:
+                log("❌ 未执行任何续期/启动操作")
+                return False
 
             log("✅ 续期+启动完成")
             return True
