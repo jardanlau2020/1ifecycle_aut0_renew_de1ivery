@@ -207,55 +207,60 @@ def do_renew():
 
             log("✅ 登录成功")
 
-            # 跳转到服务器面板
-            log(f"🌐 跳转到面板: {PANEL_URL}")
-            sb.open(PANEL_URL)
-            time.sleep(3)
-
-            title4 = sb.get_title()
-            log(f"📄 面板标题: {title4}")
-
-            # 查找续期按钮 - 多种选择器
-            log("🔍 查找续期按钮...")
-            renew_selectors = [
-                "//button[contains(text(), 'Renew')]",
-                "//button[contains(text(), 'renew')]",
-                "//button[contains(text(), '续期')]",
-                "//button[contains(text(), 'RENEW')]",
-                "//a[contains(text(), 'Renew')]",
-                "//a[contains(text(), 'renew')]",
-                "button:contains('Renew')",
-                "button:contains('renew')",
-                "button:contains('Extend')",
-                "button:contains('extend')",
-                "[class*='renew']",
-                "[class*='Renew']",
-                "[class*='extend']",
-                "[class*='Extend']",
+            # 跳转到面板 - 先尝试多种 URL
+            panel_urls = [
+                f"{BASE_URL}/panel/server/{SERVER_ID}",
+                f"{BASE_URL}/panel/dashboard",
+                f"{BASE_URL}/panel",
+                f"{BASE_URL}/panel/servers/{SERVER_ID}",
             ]
 
-            clicked = False
-            for sel in renew_selectors:
-                try:
-                    sb.click(sel, timeout=3)
-                    log(f"✅ 点击了续期按钮: {sel}")
-                    clicked = True
-                    time.sleep(3)
-                    break
-                except Exception:
-                    continue
+            found_renew = False
+            for panel_url in panel_urls:
+                log(f"🌐 尝试面板: {panel_url}")
+                sb.open(panel_url)
+                time.sleep(2)
+                title4 = sb.get_title()
+                log(f"   标题: {title4}")
 
-            if not clicked:
-                log("⚠️ 未找到续期按钮，dump HTML 分析...")
+                # 尝试查找续期/Extend 按钮
+                renew_selectors = [
+                    "//button[contains(text(), 'Renew')]",
+                    "//button[contains(text(), 'renew')]",
+                    "//button[contains(text(), 'Extend')]",
+                    "//button[contains(text(), 'extend')]",
+                    "//a[contains(text(), 'Renew')]",
+                    "//a[contains(text(), 'Extend')]",
+                    "button:contains('Renew')",
+                    "button:contains('Extend')",
+                    "[class*='renew']",
+                    "[class*='extend']",
+                ]
+
+                for sel in renew_selectors:
+                    try:
+                        sb.click(sel, timeout=2)
+                        log(f"✅ 点击了续期按钮: {sel} @ {panel_url}")
+                        found_renew = True
+                        time.sleep(2)
+                        break
+                    except Exception:
+                        continue
+
+                if found_renew:
+                    break
+
+            if not found_renew:
+                log("⚠️ 所有面板 URL 都未找到续期按钮")
+                # dump last page HTML
                 try:
                     html = sb.get_html()
                     with open("/tmp/h2p_panel.html", "w") as f:
                         f.write(html)
-                    for keyword in ["renew", "extend", "续期", "start", "stop", "restart"]:
+                    for keyword in ["renew", "extend", "续期", "start", "stop", "restart", "server"]:
                         if keyword.lower() in html.lower():
-                            for line in html.split("\n"):
-                                if keyword.lower() in line.lower() and ("button" in line.lower() or "href" in line.lower()):
-                                    log(f"   🔍 {line.strip()[:200]}")
+                            count = html.lower().count(keyword.lower())
+                            log(f"   📊 '{keyword}' 出现 {count} 次")
                 except Exception:
                     pass
                 return False
@@ -273,14 +278,19 @@ def do_renew():
                 "[class*='Start']",
             ]
 
+            start_clicked = False
             for sel in start_selectors:
                 try:
-                    sb.click(sel, timeout=3)
+                    sb.click(sel, timeout=2)
                     log(f"✅ 点击了 Start 按钮: {sel}")
-                    time.sleep(3)
+                    start_clicked = True
+                    time.sleep(2)
                     break
                 except Exception:
                     continue
+
+            if not start_clicked:
+                log("⚠️ 未找到 Start 按钮，继续...")
 
             log("✅ 续期+启动完成")
             return True
