@@ -213,125 +213,76 @@ def do_renew():
 
             log("✅ 登录成功")
 
-            # 跳转到面板 - 使用 JS 导航维持 session
-            panel_urls = [
-                f"{BASE_URL}/panel/server/{SERVER_ID}",
-                f"{BASE_URL}/panel/servers/{SERVER_ID}",
-            ]
+            # 登录后先回首页，用点击方式进入面板
+            log("🏠 返回首页...")
+            sb.open(BASE_URL)
+            time.sleep(2)
 
+            # 点击 "Claim your free server now!" 进入面板
+            log("🖱️ 点击 'Claim your free server now!'...")
+            try:
+                sb.click('a[href="/panel"]', timeout=3)
+                log("✅ 已点击进入面板")
+                time.sleep(3)
+            except Exception:
+                log("⚠️ 点击失败，直接访问 /panel")
+                sb.open(f"{BASE_URL}/panel")
+                time.sleep(3)
+
+            title4 = sb.get_title()
+            log(f"📄 面板标题: {title4}")
+
+            if "login" in title4.lower():
+                log("❌ 仍在登录页，session 丢失")
+                return False
+
+            # Dump HTML
+            try:
+                html = sb.get_html()
+                with open("/tmp/h2p_panel.html", "w") as f:
+                    f.write(html)
+                log("   📄 面板 HTML 已保存")
+                # Find all links and buttons
+                import re
+                links = re.findall(r'<a[^>]*href="([^"]*)"[^>]*>([^<]*)</a>', html)
+                buttons = re.findall(r'<button[^>]*>([^<]*)</button>', html)
+                log(f"   📊 找到 {len(links)} 个链接, {len(buttons)} 个按钮")
+                for href, text in links[:20]:
+                    if text.strip():
+                        log(f"   🔗 {href} → {text.strip()[:60]}")
+                for btn_text in buttons[:20]:
+                    if btn_text.strip():
+                        log(f"   🔘 {btn_text.strip()[:60]}")
+            except Exception as e:
+                log(f"   HTML dump 失败: {e}")
+
+            # 尝试找续期/Start 按钮
             found_renew = False
-            for panel_url in panel_urls:
-                log(f"🌐 尝试面板: {panel_url}")
-                sb.open(panel_url)
-                time.sleep(2)
-                title4 = sb.get_title()
-                log(f"   标题: {title4}")
-
-                if "login" in title4.lower():
-                    log("   ⚠️ 重定向到登录页，跳过")
-                    continue
-
-                # Dump HTML for analysis
+            all_selectors = [
+                "//button[contains(text(), 'Renew')]",
+                "//button[contains(text(), 'renew')]",
+                "//button[contains(text(), 'Extend')]",
+                "//button[contains(text(), 'extend')]",
+                "//button[contains(text(), 'Start')]",
+                "//button[contains(text(), 'start')]",
+                "//a[contains(text(), 'Renew')]",
+                "//a[contains(text(), 'Extend')",
+                "button:contains('Renew')",
+                "button:contains('Extend')",
+                "button:contains('Start')",
+                "[class*='renew']",
+                "[class*='extend']",
+                "[class*='start']",
+            ]
+            for sel in all_selectors:
                 try:
-                    html = sb.get_html()
-                    with open("/tmp/h2p_panel.html", "w") as f:
-                        f.write(html)
-                    log("   📄 面板 HTML 已保存")
-                    btn_patterns = [
-                        ("renew", "续期"), ("extend", "延长"), ("start", "启动"),
-                        ("stop", "停止"), ("restart", "重启"), ("delete", "删除"),
-                    ]
-                    for en, cn in btn_patterns:
-                        if en.lower() in html.lower():
-                            count = html.lower().count(en.lower())
-                            log(f"   📊 '{en}'({cn}) 出现 {count} 次")
-                            # Print context around first match
-                            idx = html.lower().find(en.lower())
-                            if idx >= 0:
-                                snippet = html[max(0,idx-50):idx+100].replace('\n',' ').strip()
-                                log(f"   📋 上下文: ...{snippet}...")
-                except Exception as e:
-                    log(f"   HTML dump 失败: {e}")
-
-                # 尝试查找续期/Extend 按钮
-                renew_selectors = [
-                    "//button[contains(text(), 'Renew')]",
-                    "//button[contains(text(), 'renew')]",
-                    "//button[contains(text(), 'Extend')]",
-                    "//button[contains(text(), 'extend')]",
-                    "//button[contains(text(), '续期')]",
-                    "//button[contains(text(), '延长')]",
-                    "//a[contains(text(), 'Renew')]",
-                    "//a[contains(text(), 'Extend')]",
-                    "button:contains('Renew')",
-                    "button:contains('Extend')",
-                    "[class*='renew']",
-                    "[class*='extend']",
-                    "[class*='Renew']",
-                    "[class*='Extend']",
-                    "[class*='renewal']",
-                ]
-
-                for sel in renew_selectors:
-                    try:
-                        sb.click(sel, timeout=2)
-                        log(f"✅ 点击了续期按钮: {sel} @ {panel_url}")
-                        found_renew = True
-                        time.sleep(2)
-                        break
-                    except Exception:
-                        continue
-
-                if found_renew:
-                    break
-
-            if not found_renew:
-                log("⚠️ 未找到续期按钮，尝试更多面板 URL...")
-                extra_urls = [
-                    f"{BASE_URL}/panel/server/{SERVER_ID}/dashboard",
-                    f"{BASE_URL}/panel/server/{SERVER_ID}/manage",
-                    f"{BASE_URL}/panel/server/{SERVER_ID}/control",
-                    f"{BASE_URL}/panel/server/{SERVER_ID}/settings",
-                    f"{BASE_URL}/server/{SERVER_ID}",
-                    f"{BASE_URL}/servers/{SERVER_ID}",
-                    f"{BASE_URL}/server/{SERVER_ID}/manage",
-                ]
-                for panel_url in extra_urls:
-                    log(f"🌐 尝试: {panel_url}")
-                    sb.open(panel_url)
+                    sb.click(sel, timeout=2)
+                    log(f"✅ 点击了: {sel}")
+                    found_renew = True
                     time.sleep(2)
-                    title4 = sb.get_title()
-                    log(f"   标题: {title4}")
-                    if "login" in title4.lower():
-                        continue
-
-                    all_selectors = [
-                        "//button[contains(text(), 'Renew')]",
-                        "//button[contains(text(), 'renew')]",
-                        "//button[contains(text(), 'Extend')]",
-                        "//button[contains(text(), 'extend')]",
-                        "//button[contains(text(), 'Start')]",
-                        "//button[contains(text(), 'start')]",
-                        "//a[contains(text(), 'Renew')]",
-                        "//a[contains(text(), 'Extend')",
-                        "button:contains('Renew')",
-                        "button:contains('Extend')",
-                        "button:contains('Start')",
-                        "[class*='renew']",
-                        "[class*='extend']",
-                        "[class*='start']",
-                    ]
-                    for sel in all_selectors:
-                        try:
-                            sb.click(sel, timeout=2)
-                            log(f"✅ 点击了: {sel} @ {panel_url}")
-                            found_renew = True
-                            time.sleep(2)
-                            break
-                        except Exception:
-                            continue
-                    if found_renew:
-                        break
+                    break
+                except Exception:
+                    continue
 
             # 查找 Start 按钮
             log("🔍 查找 Start 按钮...")
