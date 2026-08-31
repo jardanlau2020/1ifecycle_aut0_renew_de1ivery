@@ -183,11 +183,12 @@ def do_renew():
                 except Exception:
                     continue
 
-            # 检查是否登录成功
+            # 检查是否登录成功 - 用 URL 判断更可靠
+            current_url = sb.get_current_url()
             title3 = sb.get_title()
-            log(f"📄 当前页面: {title3}")
+            log(f"📄 当前页面: {title3} | URL: {current_url}")
 
-            if "login" in title3.lower() or "sign-in" in title3.lower():
+            if "/sign-in" in current_url or "/login" in current_url:
                 log("❌ 登录失败，仍在登录页")
                 try:
                     html = sb.get_html()
@@ -213,21 +214,14 @@ def do_renew():
 
             log("✅ 登录成功")
 
-            # 登录后先回首页，用点击方式进入面板
-            log("🏠 返回首页...")
-            sb.open(BASE_URL)
-            time.sleep(2)
+            # 用 JS 导航到面板（维持 cookie）
+            log("🌐 JS 导航到 /panel/dashboard...")
+            sb.execute_script("window.location.href = '/panel/dashboard'")
+            time.sleep(3)
 
-            # 点击 "Claim your free server now!" 进入面板
-            log("🖱️ 点击 'Claim your free server now!'...")
-            try:
-                sb.click('a[href="/panel"]', timeout=3)
-                log("✅ 已点击进入面板")
-                time.sleep(3)
-            except Exception:
-                log("⚠️ 点击失败，直接访问 /panel")
-                sb.open(f"{BASE_URL}/panel")
-                time.sleep(3)
+            title4 = sb.get_title()
+            url4 = sb.get_current_url()
+            log(f"   标题: {title4} | URL: {url4}")
 
             title4 = sb.get_title()
             log(f"📄 面板标题: {title4}")
