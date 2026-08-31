@@ -36,4 +36,5 @@ jobs:
         with:
           name: aclclouds-debug
           path: /tmp/aclclouds-*.png
+          if-no-files-found: warn
           retention-days: 3

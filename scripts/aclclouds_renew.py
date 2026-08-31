@@ -97,7 +97,16 @@ try:
         print(f"[aclclouds] Page preview: {page_text[:600]}")
         days = None
 
-    # Step 4: 找按钮（兼容 Vue 异步渲染、大小写及 role=button）
+    # Step 4: ACLClouds anti-bot 人机验证
+    # 不能自动勾选/选择验证码；检测到后明确失败并上传截图，避免误报续签成功。
+    anti_bot_markers = ["Anti-bot confirmation", "I am not a robot", "Click on VPS", "Secured by ACLClouds"]
+    if any(marker.lower() in page_text.lower() for marker in anti_bot_markers):
+        print("[aclclouds] ❌ Anti-bot confirmation required; manual verification is required")
+        driver.save_screenshot("/tmp/aclclouds-antibot.png")
+        print(f"[aclclouds] Page preview: {page_text[:1000]}")
+        sys.exit(3)
+
+    # Step 5: 找按钮（兼容 Vue 异步渲染、大小写及 role=button）
     renew_xpath = "//*[self::button or self::a or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'renew') or contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'renouvel')]"
     try:
         renew_btn = wait.until(EC.element_to_be_clickable((By.XPATH, renew_xpath)))
