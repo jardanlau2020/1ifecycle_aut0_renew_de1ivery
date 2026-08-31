@@ -13,7 +13,9 @@ import os, sys, time, re
 from selenium import webdriver
 from selenium.webdriver.chromium.options import ChromiumOptions
 from selenium.webdriver.common.by import By
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
 
 COOKIE = os.environ.get("ACLCLOUDS_SESSION_COOKIE", "")
 SERVER_ID = os.environ.get("ACLCLOUDS_SERVER_ID", "f743cf50")
@@ -54,7 +56,15 @@ try:
     # Step 2: Navigate to server page
     print("[aclclouds] Navigating to server page...")
     driver.get(SERVER_URL)
-    time.sleep(5)
+    wait = WebDriverWait(driver, 20)
+    # Vue SPA 需要等异步内容真正渲染，不能只靠固定 sleep
+    try:
+        wait.until(lambda d: d.find_element(By.TAG_NAME, "body").text.strip())
+    except TimeoutException:
+        print("[aclclouds] ❌ 页面无内容")
+        driver.save_screenshot("/tmp/aclclouds-debug.png")
+        sys.exit(1)
+    time.sleep(2)
 
     current_url = driver.current_url
     page_text = driver.find_element("tag name", "body").text
@@ -87,39 +97,57 @@ try:
         print(f"[aclclouds] Page preview: {page_text[:600]}")
         days = None
 
-    # Step 4: Look for "Renouveler" button
-    # The button appears when ≤2 days remaining
-    renew_btn = None
-    for text in ["Renouveler", "Renew", "renouveler"]:
-        try:
-            elements = driver.find_elements(By.XPATH, f"//button[normalize-space()='{text}'] | //a[normalize-space()='{text}']")
-            if elements:
-                renew_btn = elements[0]
-                print(f"[aclclouds] ✅ Found Renew button: '{text}'")
-                break
-        except:
-            continue
+    # Step 4: 找按钮（兼容 Vue 异步渲染、大小写及 role=button）
+    renew_xpath = "//*[self::button or self::a or @role='button'][contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'renew') or contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'renouvel')]"
+    try:
+        renew_btn = wait.until(EC.element_to_be_clickable((By.XPATH, renew_xpath)))
+        print(f"[aclclouds] ✅ Found clickable Renew element: {renew_btn.tag_name} / {renew_btn.text!r}")
+    except TimeoutException:
+        renew_btn = None
 
     if renew_btn:
-        print("[aclclouds] Clicking Renouveler...")
-        renew_btn.click()
-        time.sleep(5)
-        new_text = driver.find_element("tag name", "body").text
-        temps_match2 = re.search(r'Temps restant\s*[:\s]*(\d+)\s*j\s*(?:(\d+)\s*h)?', new_text, re.IGNORECASE)
-        if temps_match2:
-            d2 = int(temps_match2.group(1))
-            h2 = int(temps_match2.group(2)) if temps_match2.group(2) else 0
-            print(f"[aclclouds] ✅ After Renew - Temps restant: {d2}j {h2}h")
-        else:
-            print("[aclclouds] ⚠️ Could not verify renewal result")
+        before = (days or 0) * 24 + (int(temps_match.group(2)) if temps_match and temps_match.group(2) else 0)
+        print("[aclclouds] Clicking Renew...")
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", renew_btn)
+        try:
+            renew_btn.click()
+        except Exception:
+            driver.execute_script("arguments[0].click();", renew_btn)
+        time.sleep(1)
+        try:
+            WebDriverWait(driver, 3).until(EC.alert_is_present())
+            alert = driver.switch_to.alert
+            print(f"[aclclouds] Confirm dialog: {alert.text[:200]!r}")
+            alert.accept()
+        except TimeoutException:
+            pass
+        for sel in ["//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'confirm')]", "//button[contains(., 'Confirmer') or contains(., '确认') or contains(., 'Yes')]"]:
+            try:
+                WebDriverWait(driver, 2).until(EC.element_to_be_clickable((By.XPATH, sel))).click()
+                print("[aclclouds] ✅ Confirmed renewal dialog")
+                break
+            except TimeoutException:
+                continue
+
+        def remaining_hours(d):
+            text = d.find_element(By.TAG_NAME, "body").text
+            m = re.search(r'Temps restant\s*[:\s]*(\d+)\s*j\s*(?:(\d+)\s*h)?', text, re.IGNORECASE)
+            return (((int(m.group(1)) * 24) + (int(m.group(2)) if m.group(2) else 0), text) if m else (None, text))
+        try:
+            after, new_text = WebDriverWait(driver, 12).until(lambda d: (lambda v: v if v[0] is not None and v[0] > before else False)(remaining_hours(d)))
+            print(f"[aclclouds] ✅ Renewal verified: {after // 24}j {after % 24}h (before {before}h)")
+        except TimeoutException:
+            after, new_text = remaining_hours(driver)
+            print(f"[aclclouds] ❌ Renewal NOT verified; remaining is {after}h (before {before}h)")
+            driver.save_screenshot("/tmp/aclclouds-renew-failed.png")
+            print(f"[aclclouds] Page preview: {new_text[:800]}")
+            sys.exit(2)
     else:
         if days is not None and days <= 2:
-            print("[aclclouds] ⚠️ Window open (≤2 days) but no Renew button found!")
-        else:
-            window_days = 2
-            if days is not None:
-                window_days = max(0, days - 2)
-            print(f"[aclclouds] ℹ️ Renew window not open yet (need ≤2 days, {days}j remaining)")
+            print("[aclclouds] ❌ Window open (≤2 days) but no clickable Renew button found")
+            driver.save_screenshot("/tmp/aclclouds-renew-button-missing.png")
+            sys.exit(2)
+        print(f"[aclclouds] ℹ️ Renew window not open yet (need ≤2 days, {days}j remaining)")
 
     driver.save_screenshot("/tmp/aclclouds-debug.png")
 
