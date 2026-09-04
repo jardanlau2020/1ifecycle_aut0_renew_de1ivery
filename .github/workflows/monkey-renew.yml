@@ -17,4 +17,4 @@ jobs:
         env:
           MONKEY_API_KEY: ${{ secrets.MONKEY_API_KEY }}
           SERVER_ID: "2533c753"
-        run: bash check_and_renew.sh
+        run: bash scripts/check_and_renew.sh
