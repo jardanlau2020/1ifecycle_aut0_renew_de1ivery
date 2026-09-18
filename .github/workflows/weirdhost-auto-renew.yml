@@ -1,7 +1,12 @@
 name: Weirdhost Auto Renew
 on:
-  schedule:
-    - cron: '20 4 * * *'
+  # 2026-09-18 停排程：hub.weirdhost.xyz 上咗 Cloudflare 互動式驗證頁
+  # （「Performing security verification」+ 要人手剔 checkbox），實測三個出口
+  # 全部 403：GHA runner（Azure）、NAS 容器（cf-ray -SIN）、Hetzner FI、Tencent SG，
+  # 連真 Playwright 瀏覽器都卡喺挑戰頁 —— 屬 human-only 步驟，唔應該自動化。
+  # 自動續期在此前提下原理上不通：留低只會每日發假紅燈。改為靠人手續期 +
+  # qwenpaw cron 週一提醒（見 memory/2026-09-18.md）。
+  # 要再測試就手動 workflow_dispatch。
   workflow_dispatch:
 jobs:
   renew:
