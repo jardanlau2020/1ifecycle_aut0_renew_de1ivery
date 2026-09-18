@@ -866,6 +866,45 @@ def is_cloudflare_challenge(sb):
     return any(m in src for m in markers)
 
 
+def solve_cf_interstitial(sb, timeout=75):
+    """處理 Cloudflare 攔截頁（보안 확인 수행 중 / Just a moment）。
+
+    唔可以叫 handle_turnstile()：實測 CF 攔截頁上 `ts_exists()` 會回 False
+    （cf-turnstile-response input 未 render／藏在未完成載入嘅 iframe），
+    令重解邏輯一 call 就「無 Turnstile → 當通過」空轉（run 35329272778 實測：
+    三次重解各只用 4 秒，全部都係空轉）。
+    呢度改為唔靠 ts_exists，直接掄 UC 模式嘅 GUI 處理 + 檢查頁面係唔係仲係
+    攔截頁。
+    """
+    if not is_cloudflare_challenge(sb):
+        return True
+    print("[INFO]   處理 Cloudflare 攔截頁...")
+    start = time.time()
+    click_clock = 0
+    while time.time() - start < timeout:
+        if not is_cloudflare_challenge(sb) or ts_solved(sb):
+            print("[INFO]   Cloudflare 攔截頁已通過 ✅")
+            return True
+        try:
+            sb.uc_gui_handle_captcha()
+        except:
+            pass
+        try:
+            expand_turnstile(sb)
+            focus_turnstile_area(sb)
+        except:
+            pass
+        now = time.time()
+        if now - click_clock > 5:
+            try:
+                click_turnstile_checkbox(sb)
+            except:
+                pass
+            click_clock = now
+        time.sleep(2)
+    return not is_cloudflare_challenge(sb)
+
+
 def goto(sb, url, retries=2, wait=3):
     """導航到 url；撞 Cloudflare 挑戰就即場再解一次。
 
@@ -882,7 +921,7 @@ def goto(sb, url, retries=2, wait=3):
         if not is_cloudflare_challenge(sb):
             return True
         print(f"[WARN]   導航到 {url} 撞 Cloudflare，重解驗證（{attempt + 1}/{retries + 1}）...")
-        if not handle_turnstile(sb):
+        if not solve_cf_interstitial(sb):
             print("[ERROR]   Cloudflare 驗證未通過")
             return False
     return not is_cloudflare_challenge(sb)
@@ -1096,13 +1135,13 @@ def process_single_account(sb, account, account_index):
     print(f"[INFO] 处理账号 [{account_index + 1}]: {mask_remark(remark)} ({cookie_env})")
     print(f"{'=' * 60}")
 
-    # Step 1: Turnstile (登录阶段)
+    # Step 1: 过 Cloudflare（登录阶段）
     print(f"[INFO] [步骤1] 访问站点并处理 Cloudflare 验证...")
     sb.uc_open_with_reconnect(f"https://{DOMAIN}/", reconnect_time=5)
-    if not handle_turnstile(sb):
-        print(f"[ERROR] Turnstile 验证失败")
+    if not solve_cf_interstitial(sb):
+        print(f"[ERROR] Cloudflare 验证失败")
         result["status"] = "error"
-        result["message"] = "Cloudflare Turnstile 验证失败"
+        result["message"] = "Cloudflare 验证页未通过"
         return result
     print(f"[INFO] ✅ CF 验证通过")
 
