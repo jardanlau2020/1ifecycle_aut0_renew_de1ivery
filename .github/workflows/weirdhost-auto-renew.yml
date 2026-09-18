@@ -52,7 +52,9 @@ jobs:
           path: "*.png"
           retention-days: 3
 
+      # 2026-09-18 起續期腳本失敗會 exit 1，清理步驟要 always() 先跑得到
       - name: 清理旧的工作流运行记录
+        if: always()
         uses: Mattraks/delete-workflow-runs@v2
         with:
           token: ${{ github.token }}

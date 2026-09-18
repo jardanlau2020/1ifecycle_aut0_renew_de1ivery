@@ -844,6 +844,50 @@ def check_renewal_button_enabled(sb):
     return (True, True, xpath, "")
 
 
+def is_cloudflare_challenge(sb):
+    """當前頁面係唔係 Cloudflare 驗證頁（唔係登入頁，亦唔代表 cookie 失效）。
+
+    2026-09-18 定案：撞 CF 挑戰頁時 `is_logged_in()` 回 False，腳本誤報
+    「Cookie 已失效」——實際 cookie 可能好地地，只係卡喺 CF 挑戰頁。
+    CF 按瀏覽器語言出唔同字（實測韓文「보안 확인 수행 중」），所以同時認 DOM 特徵。
+    """
+    try:
+        src = sb.get_page_source() or ""
+    except:
+        return False
+    markers = (
+        "보안 확인",            # 韓文：正在進行安全檢查
+        "Just a moment",
+        "cf-turnstile",
+        "cf_chl_opt",
+        "challenges.cloudflare.com",
+        "Attention Required",
+    )
+    return any(m in src for m in markers)
+
+
+def goto(sb, url, retries=2, wait=3):
+    """導航到 url；撞 Cloudflare 挑戰就即場再解一次。
+
+    原本全程用 `uc_open_with_reconnect()`，佢會 disconnect／reconnect CDP，
+    CF 當成新 session 再出一次挑戰（09-15~09-18 四個 run 全部「cookie_invalid」
+    嘅真因）。改用普通導航保住已解嘅 cf_clearance，撞到先補解。
+    """
+    for attempt in range(retries + 1):
+        try:
+            sb.get(url)
+        except Exception as e:
+            print(f"[WARN]   導航失敗: {repr(e)[:120]}")
+        time.sleep(wait)
+        if not is_cloudflare_challenge(sb):
+            return True
+        print(f"[WARN]   導航到 {url} 撞 Cloudflare，重解驗證（{attempt + 1}/{retries + 1}）...")
+        if not handle_turnstile(sb):
+            print("[ERROR]   Cloudflare 驗證未通過")
+            return False
+    return not is_cloudflare_challenge(sb)
+
+
 def is_logged_in(sb):
     try:
         url = sb.get_current_url()
@@ -922,19 +966,19 @@ def process_single_server(sb, server_info, cookie_name, cookie_value, cookie_str
     print(f"  [INFO] 访问服务器页面...")
 
     try:
-        sb.uc_open_with_reconnect(server_url, reconnect_time=5)
-        time.sleep(3)
+        goto(sb, server_url)
 
         if not is_logged_in(sb):
             sb.add_cookie({"name": cookie_name, "value": cookie_value, "domain": DOMAIN, "path": "/"})
-            sb.uc_open_with_reconnect(server_url, reconnect_time=5)
-            time.sleep(3)
+            goto(sb, server_url)
 
         if not is_logged_in(sb):
             ss_path = f"{screenshot_prefix}_login_fail.png"
             sb.save_screenshot(ss_path)
-            srv_result.update(status="error", message="浏览器登录失败", screenshot=ss_path)
-            print(f"  [ERROR] 浏览器登录失败")
+            msg = ("卡在 Cloudflare 验证页" if is_cloudflare_challenge(sb)
+                   else "浏览器登录失败")
+            srv_result.update(status="error", message=msg, screenshot=ss_path)
+            print(f"  [ERROR] {msg}")
             return srv_result
 
         print(f"  [INFO] 登录成功")
@@ -979,12 +1023,10 @@ def process_single_server(sb, server_info, cookie_name, cookie_value, cookie_str
             if new_info and new_info.get("success"):
                 new_expiry = new_info.get("data", {}).get("expire", srv_result["original_expiry"])
             else:
-                sb.uc_open_with_reconnect(server_url, reconnect_time=3)
-                time.sleep(3)
+                goto(sb, server_url, wait=3)
                 new_expiry = get_expiry_from_page(sb)
         else:
-            sb.uc_open_with_reconnect(server_url, reconnect_time=3)
-            time.sleep(3)
+            goto(sb, server_url, wait=3)
             new_expiry = get_expiry_from_page(sb)
 
         srv_result["new_expiry"] = new_expiry
@@ -1065,21 +1107,30 @@ def process_single_account(sb, account, account_index):
     print(f"[INFO] ✅ CF 验证通过")
 
     # Step 2: 注入 Cookie 并登录
+    # 注意：唔再用 uc_open_with_reconnect() —— 佢會 disconnect／reconnect CDP，
+    # Cloudflare 當成新 session 再出一次挑戰頁，令下面 is_logged_in() 誤判
+    # 「Cookie 失效」（09-15~09-18 四個 run 就係死喺呢度）。
+    # 改用普通導航保住 Step 1 解到嘅 cf_clearance，撞到先補解。
     print(f"[INFO] [步骤2] 注入 Cookie 并登录...")
     sb.add_cookie({"name": cookie_name, "value": cookie_value, "domain": DOMAIN, "path": "/"})
-    sb.uc_open_with_reconnect(f"https://{DOMAIN}/", reconnect_time=5)
-    time.sleep(3)
+    goto(sb, f"https://{DOMAIN}/server/")
 
     if not is_logged_in(sb):
+        if is_cloudflare_challenge(sb):
+            ss_path = f"acc{account_index+1}_cf_blocked.png"
+            sb.save_screenshot(ss_path)
+            result["status"] = "cf_blocked"
+            result["message"] = "卡在 Cloudflare 验证页（唔代表 Cookie 失效）"
+            print("[ERROR]   卡在 Cloudflare 验证页，唔可以判定 Cookie 已失效")
+            return result
         print("[WARN]   未检测到登录状态，尝试刷新...")
-        sb.uc_open_with_reconnect(f"https://{DOMAIN}/server/", reconnect_time=5)
-        time.sleep(3)
+        goto(sb, f"https://{DOMAIN}/server/")
 
     if not is_logged_in(sb):
         ss_path = f"acc{account_index+1}_login_fail.png"
         sb.save_screenshot(ss_path)
         result["status"] = "cookie_invalid"
-        result["message"] = "Cookie 失效或登录失败（Turnstile 通过后仍无法登录）"
+        result["message"] = "Cookie 失效或登录失败（已确认唔係 CF 挑战页）"
         return result
 
     xsrf_token = get_xsrf_token_from_cookies(sb)
@@ -1199,6 +1250,9 @@ def send_account_notification(result):
     if status == "cookie_invalid":
         lines.append("状态：⚠️ Cookie 已失效，请及时更新 WEIRDHOST_COOKIE_*")
         screenshot = None
+    elif status == "cf_blocked":
+        lines.append("状态：🛡️ 卡在 Cloudflare 验证页（唔等於 Cookie 失效，无需换 cookie）")
+        screenshot = None
     elif status == "no_server":
         lines.append("状态：⚠️ 没有服务器")
         screenshot = None
@@ -1285,7 +1339,7 @@ def add_server_time():
             "<code>WEIRDHOST_COOKIE_1</code>\n"
             "格式: <code>备注-----remember_web_xxx=yyy</code>"
         )
-        return
+        sys.exit(1)
 
     print("=" * 60)
     print(f"[INFO] Weirdhost 自动续期")
@@ -1325,14 +1379,14 @@ def add_server_time():
 
         if not results:
             sync_tg_notify(f"🔔 <b>Weirdhost</b>\n\n❌ 浏览器启动失败\n\n<code>{repr(e)}</code>")
-        return
+        sys.exit(1)
 
     print(f"\n{'=' * 60}")
     print("[INFO] 全部处理完成")
     print(f"{'=' * 60}")
     icons = {
         "success": "🟢", "cooldown": "🟡", "skipped": "🔵",
-        "cookie_invalid": "🔒", "no_server": "📭",
+        "cookie_invalid": "🔒", "cf_blocked": "🛡️", "no_server": "📭",
         "error": "❌", "timeout": "⚠️",
     }
     for r in results:
@@ -1342,6 +1396,16 @@ def add_server_time():
         remark_display = mask_remark(r.get("remark", "?"))
         print(f"  {icon} {remark_display} ({email_display}) | "
               f"{srv_count} 个服务器 | {r['status']} | {r.get('message', '')}")
+
+    # 有實質失敗就 exit 非 0 —— 之前永世 exit 0，所以 09-15~09-18 四個 run
+    # 全部「success」但一次都冇續到期，冇人為意。
+    fatal = [r for r in results if r["status"] in ("error", "cookie_invalid", "cf_blocked")]
+    if fatal:
+        print(f"\n[ERROR] 有 {len(fatal)} 個帳號未完成，exit 1")
+        sys.exit(1)
+    if not results:
+        print("\n[ERROR] 冇任何帳號被處理，exit 1")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
