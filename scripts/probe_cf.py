@@ -25,6 +25,7 @@ ENGINES = [e.strip() for e in
            os.environ.get("PROBE_ENGINES", "playwright,patchright").split(",") if e.strip()]
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
+PROXY = (os.environ.get("PROBE_PROXY") or "").strip()
 CF_BLOCK_MARKERS = ("잠시만", "Just a moment", "보안 확인", "Un instant", "security verification")
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -104,11 +105,22 @@ def run_engine(engine):
         from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False,
-                                    args=["--no-sandbox", "--disable-dev-shm-usage"])
+        kwargs = {"headless": False,
+                  "args": ["--no-sandbox", "--disable-dev-shm-usage"]}
+        if PROXY:
+            kwargs["proxy"] = {"server": PROXY}
+            print(f"  [INFO] {engine} 走代理：{PROXY}", flush=True)
+        browser = p.chromium.launch(**kwargs)
         ctx = browser.new_context(user_agent=UA, locale="ko-KR", timezone_id="Asia/Seoul",
                                   viewport={"width": 1280, "height": 760})
         page = ctx.new_page()
+        try:
+            page.goto("https://www.cloudflare.com/cdn-cgi/trace", timeout=45000)
+            info = dict(l.split("=", 1) for l in page.inner_text("body").splitlines()
+                        if "=" in l)
+            print(f"  [INFO] 實際出口 IP={info.get('ip')} loc={info.get('loc')}", flush=True)
+        except Exception as e:
+            print(f"  [WARN] 出口測試失敗: {repr(e)[:70]}", flush=True)
         page.goto(URL, wait_until="domcontentloaded", timeout=60000)
         t0 = time.time()
         clicked_at = None

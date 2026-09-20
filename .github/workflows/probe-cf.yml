@@ -38,6 +38,27 @@ jobs:
           python -m playwright install --with-deps chromium
           python -m patchright install chromium || echo "patchright chromium 安裝失敗（ARM 會自己報錯）"
 
+      - name: 起代理（有 NODE_LINK 先起，失敗就直連）
+        continue-on-error: true
+        env:
+          NODE_LINK: ${{ secrets.NODE_LINK }}
+        run: |
+          python3 scripts/proxy_up.py 2>&1 | tee -a probe.log
+          # proxy_up.py 會寫 PROBE_PROXY 落 GITHUB_ENV
+
+      - name: 顯示出口 IP 對照（直連 vs 代理）
+        continue-on-error: true
+        run: |
+          echo "--- 直連 ---"
+          curl -s -m 20 https://www.cloudflare.com/cdn-cgi/trace | grep -E "^ip=|^loc=" || true
+          echo "--- 代理（PROBE_PROXY=$PROBE_PROXY）---"
+          if [ -n "$PROBE_PROXY" ]; then
+            curl -s -m 25 --socks5-hostname "${PROBE_PROXY#socks5://}" \
+              https://www.cloudflare.com/cdn-cgi/trace | grep -E "^ip=|^loc=" || true
+          else
+            echo "（冇代理）"
+          fi
+
       - name: 跑探針
         env:
           PROBE_URL: ${{ github.event.inputs.url }}
