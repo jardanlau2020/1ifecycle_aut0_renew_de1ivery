@@ -671,6 +671,15 @@ def cdp_shadow_click(sb):
                 cx, cy = min(xs) + 30, min(ys) + h / 2.0   # Turnstile checkbox 喺左邊
             print(f"[INFO]   [CDP] 點 {name} box=({int(min(xs))},{int(min(ys))},{int(w)}x{int(h)})"
                   f" → ({int(cx)},{int(cy)})")
+            # 2026-09-20：改用 OS 級真鼠標（xdotool）點，唔再用 CDP 合成事件。
+            # 證據：run 35497523552 —— 合成 mousePressed 確實觸發到 widget，
+            # 但 CF instrumentation 認得出係非真人輸入，挑戰即刻換個 widget id
+            # 重發（26 輪死循環：hfb6b → vn9bo → bq2mw → m7tzl…）。
+            # xdotool 出嘅係 X server 層事件，來源同真人滑鼠一樣。
+            if gui_click_viewport(sb, cx, cy):
+                print("[INFO]   [CDP] 已用真鼠標點 widget ✅")
+                return True
+            print("[WARN]   [CDP] 真鼠標點唔到，退回 CDP 合成事件")
             sb.driver.execute_cdp_cmd("Input.dispatchMouseEvent",
                                       {"type": "mouseMoved", "x": cx, "y": cy, "button": "none"})
             time.sleep(0.15)
@@ -751,19 +760,84 @@ def activate_browser_window():
 
 def xdotool_click(x, y):
     x, y = int(x), int(y)
-    activate_browser_window()
     try:
-        subprocess.run(["xdotool", "mousemove", str(x), str(y)], timeout=2, stderr=subprocess.DEVNULL)
-        time.sleep(0.15)
-        subprocess.run(["xdotool", "click", "1"], timeout=2, stderr=subprocess.DEVNULL)
-        return True
-    except:
+        activate_browser_window()
+    except Exception:
         pass
+    try:
+        r1 = subprocess.run(["xdotool", "mousemove", "--clearmodifiers", str(x), str(y)],
+                            capture_output=True, text=True, timeout=3)
+        time.sleep(0.25)   # 讓 CF 睇到指針先移動到 widget 上，再落 click
+        r2 = subprocess.run(["xdotool", "click", "--clearmodifiers", "1"],
+                            capture_output=True, text=True, timeout=3)
+        if r1.returncode == 0 and r2.returncode == 0:
+            return True
+        print(f"[WARN]   xdotool 失敗: move rc={r1.returncode} {r1.stderr.strip()[:50]} | "
+              f"click rc={r2.returncode} {r2.stderr.strip()[:50]}")
+    except Exception as e:
+        print(f"[WARN]   xdotool 異常: {repr(e)[:90]}")
     try:
         os.system(f"xdotool mousemove {x} {y} click 1 2>/dev/null")
         return True
-    except:
+    except Exception:
         return False
+
+
+def gui_click_viewport(sb, cx, cy):
+    """將 viewport 座標換成 X11 絕對座標，再用 xdotool 出**真鼠標**點擊。
+
+    2026-09-20 新增。CDP `Input.dispatchMouseEvent` 出嘅係合成事件，CF 嘅
+    挑戰頁 instrumentation 會標記佢（實測：撳完即刻換 widget id 重發，26 輪都
+    過唔到）。X server 層嘅事件來源同真人無異，所以做一次座標換算。
+    window.screenX/screenY + Chrome 工具列高度 = viewport 左上角嘅螢幕座標。
+    JS 行唔通（CDP session 死）時退回 xdotool 攞窗口幾何。
+    """
+    info = js_eval(sb, """
+        return {sx: window.screenX || 0, sy: window.screenY || 0,
+                oh: window.outerHeight || 0, ih: window.innerHeight || 0,
+                ox: window.outerWidth || 0, iw: window.innerWidth || 0};
+    """, default=None, label="gui_click_window_info")
+    if not info:
+        try:
+            info = sb.execute_script("""
+                return {sx: window.screenX || 0, sy: window.screenY || 0,
+                        oh: window.outerHeight || 0, ih: window.innerHeight || 0,
+                        ox: window.outerWidth || 0, iw: window.innerWidth || 0};
+            """)
+        except Exception:
+            info = None
+    sx = sy = 0.0
+    bar, side = 88.0, 0.0
+    if info:
+        try:
+            sx = float(info.get("sx") or 0)
+            sy = float(info.get("sy") or 0)
+            oh, ih = float(info.get("oh") or 0), float(info.get("ih") or 0)
+            ox, iw = float(info.get("ox") or 0), float(info.get("iw") or 0)
+            if oh > ih > 0:
+                bar = oh - ih
+            if ox > iw > 0:
+                side = (ox - iw) / 2.0
+        except Exception:
+            pass
+    else:
+        # JS 全靜默：用 xdotool 攞窗口位置，假設窗口貼 X 原點（xvfb 冇 WM）
+        try:
+            r = subprocess.run(["xdotool", "search", "--onlyvisible", "--class", "chrome"],
+                               capture_output=True, text=True, timeout=3)
+            wid = (r.stdout.strip().split("\n") or [""])[0]
+            if wid:
+                g = subprocess.run(["xdotool", "getwindowgeometry", "--shell", wid],
+                                   capture_output=True, text=True, timeout=3).stdout
+                gd = dict(l.split("=", 1) for l in g.strip().splitlines() if "=" in l)
+                sx, sy = float(gd.get("X", 0)), float(gd.get("Y", 0))
+        except Exception:
+            pass
+    abs_x, abs_y = sx + side + cx, sy + bar + cy
+    print(f"[INFO]   真鼠標 → screen=({int(abs_x)},{int(abs_y)}) "
+          f"[viewport ({int(cx)},{int(cy)}) + window ({int(sx)},{int(sy)}) + bar {int(bar)}]")
+    return xdotool_click(abs_x, abs_y)
+
 
 def click_turnstile_checkbox(sb):
     coords = get_turnstile_checkbox_coords(sb)
@@ -1026,6 +1100,12 @@ def solve_cf_interstitial(sb, timeout=100):
     start = time.time()
     click_clock = 0
     rounds = 0
+    # 2026-09-20：撳少啲、等耐啲。舊版每 5 秒撳一次（100 秒撳 ~20 次），
+    # CF 每次都當成新一次互動 → 挑戰反覆重發（run 35497523552 死循環 26 輪）。
+    # 真人係撳一次、等十零秒；所以跟真人節奏，最多撳 3 次。
+    MAX_CLICKS = 3
+    CLICK_INTERVALS = [0, 12, 30]
+    clicks = 0
     while time.time() - start < timeout:
         rounds += 1
         if not is_cloudflare_challenge(sb) or ts_solved(sb):
@@ -1041,18 +1121,21 @@ def solve_cf_interstitial(sb, timeout=100):
         except:
             pass
         now = time.time()
-        if now - click_clock > 5:
+        if clicks < MAX_CLICKS and now - click_clock > CLICK_INTERVALS[clicks]:
+            print(f"[INFO]   第 {clicks + 1}/{MAX_CLICKS} 次點 CF widget（之後等 "
+                  f"{CLICK_INTERVALS[clicks] if clicks else 12}s 再考慮補撳）")
+            clicks += 1
             clicked = False
+            # JS 睇唔到 widget（closed shadow DOM）→ 先用 CDP 穿透搵座標，再出真鼠標
             try:
-                clicked = click_turnstile_checkbox(sb)
-            except Exception:
-                pass
+                clicked = cdp_shadow_click(sb)
+            except Exception as e:
+                print(f"[WARN]   [CDP] 點擊異常: {repr(e)[:100]}")
             if not clicked:
-                # JS 睇唔到 widget（closed shadow DOM）→ 用 CDP 穿透搵
                 try:
-                    cdp_shadow_click(sb)
-                except Exception as e:
-                    print(f"[WARN]   [CDP] 點擊異常: {repr(e)[:100]}")
+                    clicked = click_turnstile_checkbox(sb)
+                except Exception:
+                    pass
             click_clock = now
         if rounds % 12 == 0:
             # 卡住 30 秒以上：刷新一次（CF 託管挑戰刷一刷有時就過，亦更新 challenge token）
