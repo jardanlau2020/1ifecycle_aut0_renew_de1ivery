@@ -103,6 +103,30 @@ def run_engine(engine):
                   f"blocked={blocked}", flush=True)
             if "cf_clearance" in names:
                 res["cf_clearance"] = True
+            if "cf_clearance" in names:
+                # 2026-09-20 實測：patchright 一撳就有 cf_clearance，但攔截頁仍然唔走。
+                # 試用「取到 clearance 就重新載入」——CF 見 cookie 有效應該直接放行。
+                res["clicked"] = res["clicked"]  # noqa
+                tries = res.get("reload_tries", 0)
+                if tries < 3:
+                    res["reload_tries"] = tries + 1
+                    print(f"  🔄 cf_clearance 已入 cookie jar → 第 {tries + 1} 次重新載入",
+                          flush=True)
+                    try:
+                        page.goto(URL, wait_until="domcontentloaded", timeout=60000)
+                        time.sleep(4)
+                        t2 = page.title()
+                        blocked2 = any(m in t2 for m in CF_BLOCK_MARKERS)
+                        print(f"  🔄 重載後 title={t2[:40]!r} blocked={blocked2}", flush=True)
+                        if not blocked2:
+                            res["passed"] = True
+                            res["clicked_at_s"] = res.get("clicked_at_s")
+                            print(f"  ✅✅ {engine}：重新載入後真正入到站 ✅✅", flush=True)
+                            break
+                    except Exception as e:
+                        print(f"  [WARN] 重載失敗: {repr(e)[:90]}", flush=True)
+                # 重載都唔得 → 唔好死等，早啲收工
+                break
             if "cf_clearance" in names and not blocked:
                 res["passed"] = True
                 print(f"  ✅ {engine} 過咗 CF（cf_clearance 落地 + 唔再係攔截頁）", flush=True)
