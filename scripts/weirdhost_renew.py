@@ -1572,7 +1572,12 @@ def add_server_time():
             test=True,
             locale="ko",
             headless=False,
-            chromium_arg="--disable-dev-shm-usage,--no-sandbox,--disable-gpu,--disable-software-rasterizer,--disable-background-timer-throttling"
+            # 2026-09-20：移除 --disable-gpu/--disable-software-rasterizer。
+            # run 35497214937 用 CDP pierce 已經點得到 CF widget（box 300x65，
+            # 點 checkbox 位），但 widget id 一直換（cf-chl-widget-hfb6b →
+            # vn9bo → ge3ya…）＝挑戰反覆重發，懷疑係 GPU/WebGL 被禁導致指紋
+            # 異常過唔到託管挑戰。呢兩個 flag 對 CF 挑戰冇好處，先試除去。
+            chromium_arg="--disable-dev-shm-usage,--no-sandbox,--disable-background-timer-throttling"
         ) as sb:
             print("\n[INFO] 浏览器已启动")
 
