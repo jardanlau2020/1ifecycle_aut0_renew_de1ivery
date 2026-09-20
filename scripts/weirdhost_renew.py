@@ -612,6 +612,79 @@ EXPAND_POPUP_JS = """
 })();
 """
 
+def cdp_shadow_click(sb):
+    """用 CDP 穿透 **closed shadow DOM** 搵 Turnstile widget / checkbox，再用真鼠標事件點佢。
+
+    2026-09-20 實測（run 35496893092）：hub.weirdhost.xyz 撞 CF 攔截頁
+    （title「잠시만 기다리십시오…」/ 보안 확인 수행 중），頁面 iframes=[]、
+    .cf-turnstile 唔見，但 light DOM 有 input[name=cf-turnstile-response]
+    ——即 CF 新版攔截頁將 widget 收咗喺 closed shadow root 入面，普通
+    document.querySelector 永遠搵唔到（所以之前一直「无法获取 Turnstile 坐标」）。
+    CDP `DOM.getDocument(pierce=True)` 睇得穿 closed shadow root。
+    呢個只係「用真鼠標點個 widget」，唔係解 captcha。
+    """
+    try:
+        doc = sb.driver.execute_cdp_cmd("DOM.getDocument", {"depth": -1, "pierce": True})
+    except Exception as e:
+        print(f"[WARN]   [CDP] DOM.getDocument 失敗: {repr(e)[:110]}")
+        return False
+
+    found = []
+
+    def _attrs(n):
+        a = n.get("attributes") or []
+        return {a[i]: a[i + 1] for i in range(0, len(a) - 1, 2)}
+
+    def _walk(n):
+        try:
+            name = (n.get("nodeName") or "").lower()
+            am = _attrs(n)
+            blob = " ".join(str(am.get(k, "")) for k in
+                            ("src", "class", "id", "name", "type", "aria-label")).lower()
+            if name in ("iframe", "input", "div", "span", "label", "button", "cf-turnstile",
+                        "shadow-root", "challenge") and (
+                    "turnstile" in blob or "challenge" in blob or "checkbox" in blob
+                    or name in ("iframe", "cf-turnstile")):
+                found.append((n.get("nodeId"), name, am, blob[:70]))
+        except Exception:
+            pass
+        for key in ("children", "shadowRoots", "contentDocument"):
+            for c in (n.get(key) or []):
+                _walk(c)
+
+    _walk(doc.get("root", {}))
+    if found:
+        print(f"[INFO]   [CDP] pierce 掃到 {len(found)} 個候選: "
+              f"{[(f[1], f[3]) for f in found[:4]]}")
+    else:
+        print("[WARN]   [CDP] pierce 都掃唔到任何候選節點")
+    for node_id, name, am, blob in found[:8]:
+        try:
+            box = sb.driver.execute_cdp_cmd("DOM.getBoxModel", {"nodeId": node_id})
+            quad = box["model"]["content"]
+            xs, ys = quad[0::2], quad[1::2]
+            w, h = max(xs) - min(xs), max(ys) - min(ys)
+            if w < 4 or h < 4:
+                continue
+            cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+            if name in ("iframe", "cf-turnstile") and w > 100:
+                cx, cy = min(xs) + 30, min(ys) + h / 2.0   # Turnstile checkbox 喺左邊
+            print(f"[INFO]   [CDP] 點 {name} box=({int(min(xs))},{int(min(ys))},{int(w)}x{int(h)})"
+                  f" → ({int(cx)},{int(cy)})")
+            sb.driver.execute_cdp_cmd("Input.dispatchMouseEvent",
+                                      {"type": "mouseMoved", "x": cx, "y": cy, "button": "none"})
+            time.sleep(0.15)
+            for ev in ("mousePressed", "mouseReleased"):
+                sb.driver.execute_cdp_cmd("Input.dispatchMouseEvent",
+                                          {"type": ev, "x": cx, "y": cy, "button": "left",
+                                           "clickCount": 1})
+                time.sleep(0.08)
+            return True
+        except Exception:
+            continue
+    return False
+
+
 def get_turnstile_checkbox_coords(sb):
     """攞 Turnstile checkbox 嘅頁面座標（相對 viewport）。
 
@@ -969,10 +1042,17 @@ def solve_cf_interstitial(sb, timeout=100):
             pass
         now = time.time()
         if now - click_clock > 5:
+            clicked = False
             try:
-                click_turnstile_checkbox(sb)
-            except:
+                clicked = click_turnstile_checkbox(sb)
+            except Exception:
                 pass
+            if not clicked:
+                # JS 睇唔到 widget（closed shadow DOM）→ 用 CDP 穿透搵
+                try:
+                    cdp_shadow_click(sb)
+                except Exception as e:
+                    print(f"[WARN]   [CDP] 點擊異常: {repr(e)[:100]}")
             click_clock = now
         if rounds % 12 == 0:
             # 卡住 30 秒以上：刷新一次（CF 託管挑戰刷一刷有時就過，亦更新 challenge token）
