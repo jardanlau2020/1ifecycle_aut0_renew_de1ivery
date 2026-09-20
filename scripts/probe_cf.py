@@ -178,13 +178,17 @@ def _poll(page, engine, res):
                               flush=True)
                     except Exception as e:
                         print(f"  [DIAG] 失敗: {repr(e)[:80]}", flush=True)
-                how = ff_widget_click(page)          # Firefox 冇 CDP 嘅後備路
-                if how:
-                    print(f"  → 喺 widget frame 內部撳咗（{how}）", flush=True)
+                ok, how, pt = ff_widget_click(page, engine)   # Firefox 冇 CDP 嘅後備路
+                if ok:
+                    print(f"  → Firefox 路撳 widget：{how}"
+                          + (f" @ ({pt[0]:.0f},{pt[1]:.0f})" if pt else ""), flush=True)
+                    if pt:
+                        human_click(page, pt[0], pt[1])
                     res["clicked"] = True
-                    res["click_style"] = "frame-click"
+                    res["click_style"] = how
                     clicked_at = elapsed
                     continue
+                res["notes"].append(f"t={elapsed:.0f}s Firefox 路都搵唔到：{how}")
             if box:
                 cx, cy = box["click"]
                 print(f"  → 撳 widget ({cx:.0f},{cy:.0f}) 一次，之後唔再騷擾", flush=True)
@@ -215,27 +219,37 @@ def _poll(page, engine, res):
     return res
 
 
-def ff_widget_click(page):
-    """Firefox／camoufox 冇 CDP，改用 frame 內部點擊 —— 2026-09-20 加。
+def ff_widget_click(page, engine="?"):
+    """Firefox／camoufox 嘅 widget 撳法 —— 2026-09-20 加。
 
-    原理：Playwright 由 frame tree 得知 iframe 位置，就算 widget iframe 藏喺
-    closed shadow DOM（JS 搵唔到、CDP 又冇 Firefox 版），frame 內部嘅
-    `element.click()` 都映射得到主頁面嘅正確座標。
-    回傳：成功回「用咗邊個 selector」，撳唔到就 None。
+    實測（run 35510547106）Firefox 下 CF 嘅 widget iframe URL 係**空字串**
+    （srcdoc 內嵌），而主頁 `iframe` 數=0、`shadowRoot` 數=0 —— 即係之前用
+    「URL 含 challenges.cloudflare.com」做 filter 係搵唔到嘅。
+    所以呢度改成：掃**所有非主 frame**，先試 frame 內部 selector，撳唔到就用
+    frame 嘅 bounding box 座標（Playwright 由 frame tree 拎到，唔靠 JS）。
+    回傳：(成功與否, 用咗乜嘢方法, 座標或 None)
     """
+    main = page.main_frame
     for fr in page.frames:
-        if "challenges.cloudflare.com" not in (fr.url or ""):
+        if fr == main:
             continue
-        for sel in ("#challenge-stage", "input[type=checkbox]",
-                    ".ctp-checkbox-label", "label", "body"):
+        for sel in ("input[type=checkbox]", "#challenge-stage", ".ctp-checkbox-label",
+                    "label", "[id*=challenge]", "[class*=checkbox]"):
             try:
                 el = fr.query_selector(sel)
                 if el is not None:
                     el.click(timeout=3000)
-                    return f"frame.click({sel})"
+                    return True, f"frame.click({sel})", None
             except Exception:
                 continue
-    return None
+        try:                        # selector 撳唔到 → 用 iframe 幾何位置撳左邊
+            bb = fr.frame_element().bounding_box()
+            if bb and bb["width"] > 120 and bb["height"] > 25:
+                cx, cy = bb["x"] + min(30, bb["width"] / 4), bb["y"] + bb["height"] / 2
+                return True, "frame bbox click", (cx, cy)
+        except Exception:
+            continue
+    return False, "搵唔到 widget frame", None
 
 
 def run_camoufox(res):
