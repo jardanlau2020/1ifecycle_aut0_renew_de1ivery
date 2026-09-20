@@ -70,8 +70,11 @@ def cdp_widget_box(page):
             if "turnstile" in blob or "challenge" in blob:
                 found.append((n.get("nodeId"), name, blob[:60]))
         for key in ("children", "shadowRoots", "contentDocument"):
-            for c in (n.get(key) or []):
-                _walk(c)
+            v = n.get(key)
+            kids = v if isinstance(v, list) else ([v] if isinstance(v, dict) else [])
+            for c in kids:
+                if isinstance(c, dict):
+                    _walk(c)
 
     _walk(doc.get("root", {}))
     for node_id, name, blob in found:
