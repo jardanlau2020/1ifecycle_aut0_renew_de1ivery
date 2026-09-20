@@ -612,6 +612,78 @@ EXPAND_POPUP_JS = """
 })();
 """
 
+def mark_viewport_point(sb, x, y):
+    """喺 viewport 座標 (x,y) 畫一個紅色十字，用嚟喺截圖度核對「我哋以為嘅位置」。
+
+    2026-09-20 加：run 35500018550 真鼠標出咗（screen 165,453），但 cf_fail.png
+    睇到 widget 其實喺圖片座標 (~196,304) 而 CDP 報 (115,280) —— 兩者差 ~80px。
+    紅十字就係「CDP 以為嘅點」，同截圖對照即知座標系錯喺邊。
+    """
+    return js_eval(sb, """
+        (function(){
+          var old = document.getElementById('__probe_mark');
+          if (old) old.remove();
+          var d = document.createElement('div');
+          d.id = '__probe_mark';
+          d.style.cssText = 'position:fixed;left:' + (x - 9) + 'px;top:' + (y - 9) +
+            'px;width:18px;height:18px;border:2px solid #ff0000;border-radius:50%;' +
+            'background:rgba(255,0,0,.45);z-index:2147483647;pointer-events:none;';
+          (document.body || document.documentElement).appendChild(d);
+          var r = d.getBoundingClientRect();
+          return {mark_left: r.left, mark_top: r.top, scrollX: window.scrollX || 0,
+                  scrollY: window.scrollY || 0, dpr: window.devicePixelRatio || 1,
+                  iw: window.innerWidth, ih: window.innerHeight};
+        })();
+    """, default=None, label="mark_viewport_point")
+
+
+def mouse_loc():
+    """讀返 X server 上真實嘅鼠標位置（xdotool getmouselocation），核對有冇被 clamp。"""
+    try:
+        out = subprocess.run(["xdotool", "getmouselocation"], capture_output=True,
+                             text=True, timeout=3).stdout.strip()
+        d = dict(p.split(":", 1) for p in out.split() if ":" in p)
+        return int(d.get("x", -1)), int(d.get("y", -1))
+    except Exception:
+        return -1, -1
+
+
+def detect_offset_from_image(path):
+    """由截圖自動搵「藍色 Turnstile widget 框」嘅實際位置，同 CDP 報嘅座標對照。
+
+    用純 PIL（GHA 有裝 Pillow）掃描：CF 託管挑戰嘅 widget 係白色底 + 淺灰邊框，
+    但最穩陣嘅特徵係「checkbox 方格」（深色邊、白色內部）同右邊 Cloudflare logo
+    （橙色）。呢度搵橙色像素團（CF logo）嘅質心 —— 佢一定喺 widget 右半邊，
+    據此推算 iframe 左邊界同垂直中心，用嚟校正點擊座標。
+    """
+    try:
+        from PIL import Image
+    except Exception:
+        return None
+    try:
+        im = Image.open(path).convert("RGB")
+    except Exception:
+        return None
+    w, h = im.size
+    px = im.load()
+    orange_xs, orange_ys = [], []
+    # CF logo 橙 = 約 (246,130,31)；容差放寬
+    for yy in range(0, h, 2):
+        for xx in range(0, w, 2):
+            r, g, b = px[xx, yy]
+            if r > 200 and 90 < g < 165 and b < 90:
+                orange_xs.append(xx)
+                orange_ys.append(yy)
+    if len(orange_xs) < 8:
+        return None
+    logo_cx = sum(orange_xs) / len(orange_xs)
+    logo_cy = sum(orange_ys) / len(orange_ys)
+    print(f"[DIAG]   截圖 {w}x{h}：CF logo 橙色像素 {len(orange_xs)} 個，質心=({logo_cx:.0f},{logo_cy:.0f})")
+    # Turnstile 標準 widget 300x65：logo 喺右邊約 x=+250 處（距左邊界），垂直居中
+    return {"left": round(logo_cx - 250), "center_y": round(logo_cy),
+            "checkbox": (round(logo_cx - 250 + 30), round(logo_cy))}
+
+
 def cdp_shadow_click(sb):
     """用 CDP 穿透 **closed shadow DOM** 搵 Turnstile widget / checkbox，再用真鼠標事件點佢。
 
@@ -676,7 +748,51 @@ def cdp_shadow_click(sb):
             # 但 CF instrumentation 認得出係非真人輸入，挑戰即刻換個 widget id
             # 重發（26 輪死循環：hfb6b → vn9bo → bq2mw → m7tzl…）。
             # xdotool 出嘅係 X server 層事件，來源同真人滑鼠一樣。
-            if gui_click_viewport(sb, cx, cy):
+            # 座標核對（2026-09-20）：畫紅十字喺 CDP 報嘅 viewport 點 → 截圖 → 由圖反推
+            # widget 真實位置。run 35500018550 顯示點擊前後 widget id 都變，但 cf_fail.png
+            # 見 widget 喺圖片 (~196,304)，而 CDP 報 (115,280)：即可能一直撳錯位。
+            try:
+                mk = mark_viewport_point(sb, cx, cy)
+                if mk:
+                    print(f"[DIAG]   紅十字 viewport ({int(cx)},{int(cy)}) → rect "
+                          f"({mk.get('mark_left')},{mk.get('mark_top')}) | scroll="
+                          f"({mk.get('scrollX')},{mk.get('scrollY')}) dpr={mk.get('dpr')} "
+                          f"viewport={mk.get('iw')}x{mk.get('ih')}")
+            except Exception as e:
+                print(f"[WARN]   畫標記失敗: {repr(e)[:80]}")
+            clicked = gui_click_viewport(sb, cx, cy)
+            mx, my = mouse_loc()
+            print(f"[DIAG]   xdotool 讀返鼠標位置=({mx},{my})")
+            try:
+                sb.save_screenshot("cf_click_mark.png")
+                det = detect_offset_from_image("cf_click_mark.png")
+                cy_mid = int((min(ys) + max(ys)) / 2)
+                if det:
+                    dx = det["left"] - int(min(xs))
+                    dy = det["center_y"] - cy_mid
+                    print(f"[DIAG]   圖像反推 widget left={det['left']} center_y={det['center_y']} "
+                          f"vs CDP left={int(min(xs))} center_y={cy_mid} → 偏差 "
+                          f"dx={dx} dy={dy}（建議撳 ({det['checkbox'][0]},{det['checkbox'][1]})）")
+                    # 偏差大 = CDP 座標唔可信 → 即刻用圖像反推嘅點補撳（自我校正）
+                    if abs(dx) > 15 or abs(dy) > 10:
+                        bx, by = det["checkbox"]
+                        print(f"[INFO]   CDP 座標偏差過大 → 改用圖像座標補撳 ({bx},{by})")
+                        gui_click_viewport(sb, bx, by)
+                        time.sleep(2)
+                        try:
+                            sb.save_screenshot("cf_click_mark2.png")
+                            det2 = detect_offset_from_image("cf_click_mark2.png")
+                            if det2:
+                                print(f"[DIAG]   補撳後 widget left={det2['left']} "
+                                      f"center_y={det2['center_y']}")
+                        except Exception:
+                            pass
+                        return True
+                else:
+                    print("[WARN]   圖像反推失敗（搵唔到 CF logo 橙色像素）")
+            except Exception as e:
+                print(f"[WARN]   截圖/圖像分析失敗: {repr(e)[:90]}")
+            if clicked:
                 print("[INFO]   [CDP] 已用真鼠標點 widget ✅")
                 return True
             print("[WARN]   [CDP] 真鼠標點唔到，退回 CDP 合成事件")
