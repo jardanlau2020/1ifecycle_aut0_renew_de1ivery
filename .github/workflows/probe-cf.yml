@@ -37,6 +37,9 @@ jobs:
           pip install --quiet playwright patchright
           python -m playwright install --with-deps chromium
           python -m patchright install chromium || echo "patchright chromium 安裝失敗（ARM 會自己報錯）"
+          # camoufox（反偵測 Firefox）：專門補 WebGL/音頻/字體指紋，Chromium 兩隻引擎都過唔到時用
+          pip install --quiet "camoufox[geoip]" || echo "[WARN] camoufox 裝唔到"
+          python -m camoufox fetch || echo "[WARN] camoufox 瀏覽器下載失敗"
 
       - name: 起代理（有 NODE_LINK 先起，失敗就直連）
         continue-on-error: true

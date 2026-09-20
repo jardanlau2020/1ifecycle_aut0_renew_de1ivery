@@ -95,10 +95,140 @@ def cdp_widget_box(page):
     return None
 
 
+def _poll(page, engine, res):
+    """開目標頁 → 輪詢 CF 狀態 → 需要就似真人撳一次 widget → 需要就重新載入。
+
+    2026-09-20 由 run_engine 抽出，等 camoufox 分支（唔用 sync_playwright）共用。
+    """
+    clicked_at = None
+    page.goto(URL, wait_until="domcontentloaded", timeout=60000)
+    t0 = time.time()
+    clicked_at = None
+    while time.time() - t0 < WAIT:
+        time.sleep(2)
+        elapsed = time.time() - t0
+        try:
+            title = page.title()
+        except Exception:
+            title = "?"
+        names = {c["name"] for c in page.context.cookies()}
+        blocked = any(m in title for m in CF_BLOCK_MARKERS)
+        res["titles"].append(f"{elapsed:.0f}s:{title[:22]}")
+        print(f"  t={elapsed:4.0f}s title={title[:40]!r} cookies={sorted(names)[:6]} "
+              f"blocked={blocked}", flush=True)
+        if "cf_clearance" in names:
+            res["cf_clearance"] = True
+        if "cf_clearance" in names:
+            # 2026-09-20 實測：patchright 一撳就有 cf_clearance，但攔截頁仍然唔走。
+            # 試用「取到 clearance 就重新載入」——CF 見 cookie 有效應該直接放行。
+            res["clicked"] = res["clicked"]  # noqa
+            tries = res.get("reload_tries", 0)
+            if tries < 3:
+                res["reload_tries"] = tries + 1
+                print(f"  🔄 cf_clearance 已入 cookie jar → 第 {tries + 1} 次重新載入",
+                      flush=True)
+                try:
+                    page.goto(URL, wait_until="domcontentloaded", timeout=60000)
+                    time.sleep(4)
+                    t2 = page.title()
+                    blocked2 = any(m in t2 for m in CF_BLOCK_MARKERS)
+                    print(f"  🔄 重載後 title={t2[:40]!r} blocked={blocked2}", flush=True)
+                    if not blocked2:
+                        res["passed"] = True
+                        res["clicked_at_s"] = res.get("clicked_at_s")
+                        print(f"  ✅✅ {engine}：重新載入後真正入到站 ✅✅", flush=True)
+                        break
+                except Exception as e:
+                    print(f"  [WARN] 重載失敗: {repr(e)[:90]}", flush=True)
+            # 重載都唔得 → 唔好死等，早啲收工
+            break
+        if "cf_clearance" in names and not blocked:
+            res["passed"] = True
+            print(f"  ✅ {engine} 過咗 CF（cf_clearance 落地 + 唔再係攔截頁）", flush=True)
+            break
+        # 撳一次（未撳過 + 已經撳完 8 秒以上就唔好再騷擾）
+        if not res["clicked"] and elapsed > 2 and blocked:
+            box = None
+            try:
+                for fr in page.frames:
+                    if "challenges.cloudflare.com" in (fr.url or ""):
+                        el = fr.frame_element()
+                        bb = el.bounding_box()
+                        if bb and bb["width"] > 100:
+                            box = {"x": bb["x"], "y": bb["y"], "w": bb["width"],
+                                   "h": bb["height"],
+                                   "click": (bb["x"] + 30, bb["y"] + bb["height"] / 2)}
+                            break
+            except Exception as e:
+                res["notes"].append(f"frame scan: {repr(e)[:60]}")
+            if box is None:
+                box = cdp_widget_box(page)
+            if box:
+                cx, cy = box["click"]
+                print(f"  → 撳 widget ({cx:.0f},{cy:.0f}) 一次，之後唔再騷擾", flush=True)
+                try:
+                    human_click(page, cx, cy)   # 2026-09-20：改用似真人嘅點擊序列
+                    res["clicked"] = True
+                    res["click_style"] = "human"
+                    clicked_at = elapsed
+                except Exception as e:
+                    res["notes"].append(f"click: {repr(e)[:70]}")
+            else:
+                res["notes"].append(f"t={elapsed:.0f}s 搵唔到 widget")
+    try:
+        page.screenshot(path=f"probe_{engine}.png", full_page=False)
+    except Exception as e:
+        res["notes"].append(f"screenshot: {repr(e)[:60]}")
+    try:
+        res["final_title"] = page.title()
+        res["final_url"] = page.url
+    except Exception:
+        pass
+    if clicked_at is not None:
+        res["clicked_at_s"] = round(clicked_at, 1)
+    try:
+        browser.close()
+    except Exception:
+        pass
+    return res
+
+
+def run_camoufox(res):
+    """camoufox（反偵測 Firefox）分支 —— 2026-09-20 加。
+
+    動機：Chromium 兩隻引擎（playwright / patchright）都拎到 cf_clearance，但站
+    仍然唔放行 → CF 睇嘅唔係「有冇 CDP 痕」，而係更深嘅瀏覽器指紋
+    （WebGL / 音頻 / 字體 / 硬件訊息）。camoufox 專門補呢啲。
+    """
+    from camoufox.sync_api import Camoufox
+    kw = {"headless": False, "humanize": True, "locale": "ko-KR", "os": ["windows"]}
+    if PROXY:
+        kw["proxy"] = {"server": PROXY}
+        print(f"  [INFO] camoufox 走代理：{PROXY}", flush=True)
+    with Camoufox(**kw) as browser:
+        page = browser.new_page()
+        try:
+            page.goto("https://www.cloudflare.com/cdn-cgi/trace", timeout=45000)
+            info = dict(l.split("=", 1) for l in page.inner_text("body").splitlines()
+                        if "=" in l)
+            print(f"  [INFO] 實際出口 IP={info.get('ip')} loc={info.get('loc')}", flush=True)
+        except Exception as e:
+            print(f"  [WARN] 出口測試失敗: {repr(e)[:70]}", flush=True)
+        return _poll(page, "camoufox", res)
+
+
+
 def run_engine(engine):
     print(f"\n{'=' * 72}\n[ARM] {engine}\n{'=' * 72}", flush=True)
     res = {"engine": engine, "clicked": False, "passed": False, "cf_clearance": False,
            "titles": [], "notes": []}
+    if engine == "camoufox":
+        try:
+            return run_camoufox(res)
+        except Exception as e:
+            print(f"[ERROR] camoufox 爆咗: {type(e).__name__}: {str(e)[:200]}", flush=True)
+            res["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+            return res
     if engine == "patchright":
         from patchright.sync_api import sync_playwright
     else:
@@ -121,96 +251,7 @@ def run_engine(engine):
             print(f"  [INFO] 實際出口 IP={info.get('ip')} loc={info.get('loc')}", flush=True)
         except Exception as e:
             print(f"  [WARN] 出口測試失敗: {repr(e)[:70]}", flush=True)
-        page.goto(URL, wait_until="domcontentloaded", timeout=60000)
-        t0 = time.time()
-        clicked_at = None
-        while time.time() - t0 < WAIT:
-            time.sleep(2)
-            elapsed = time.time() - t0
-            try:
-                title = page.title()
-            except Exception:
-                title = "?"
-            names = {c["name"] for c in ctx.cookies()}
-            blocked = any(m in title for m in CF_BLOCK_MARKERS)
-            res["titles"].append(f"{elapsed:.0f}s:{title[:22]}")
-            print(f"  t={elapsed:4.0f}s title={title[:40]!r} cookies={sorted(names)[:6]} "
-                  f"blocked={blocked}", flush=True)
-            if "cf_clearance" in names:
-                res["cf_clearance"] = True
-            if "cf_clearance" in names:
-                # 2026-09-20 實測：patchright 一撳就有 cf_clearance，但攔截頁仍然唔走。
-                # 試用「取到 clearance 就重新載入」——CF 見 cookie 有效應該直接放行。
-                res["clicked"] = res["clicked"]  # noqa
-                tries = res.get("reload_tries", 0)
-                if tries < 3:
-                    res["reload_tries"] = tries + 1
-                    print(f"  🔄 cf_clearance 已入 cookie jar → 第 {tries + 1} 次重新載入",
-                          flush=True)
-                    try:
-                        page.goto(URL, wait_until="domcontentloaded", timeout=60000)
-                        time.sleep(4)
-                        t2 = page.title()
-                        blocked2 = any(m in t2 for m in CF_BLOCK_MARKERS)
-                        print(f"  🔄 重載後 title={t2[:40]!r} blocked={blocked2}", flush=True)
-                        if not blocked2:
-                            res["passed"] = True
-                            res["clicked_at_s"] = res.get("clicked_at_s")
-                            print(f"  ✅✅ {engine}：重新載入後真正入到站 ✅✅", flush=True)
-                            break
-                    except Exception as e:
-                        print(f"  [WARN] 重載失敗: {repr(e)[:90]}", flush=True)
-                # 重載都唔得 → 唔好死等，早啲收工
-                break
-            if "cf_clearance" in names and not blocked:
-                res["passed"] = True
-                print(f"  ✅ {engine} 過咗 CF（cf_clearance 落地 + 唔再係攔截頁）", flush=True)
-                break
-            # 撳一次（未撳過 + 已經撳完 8 秒以上就唔好再騷擾）
-            if not res["clicked"] and elapsed > 2 and blocked:
-                box = None
-                try:
-                    for fr in page.frames:
-                        if "challenges.cloudflare.com" in (fr.url or ""):
-                            el = fr.frame_element()
-                            bb = el.bounding_box()
-                            if bb and bb["width"] > 100:
-                                box = {"x": bb["x"], "y": bb["y"], "w": bb["width"],
-                                       "h": bb["height"],
-                                       "click": (bb["x"] + 30, bb["y"] + bb["height"] / 2)}
-                                break
-                except Exception as e:
-                    res["notes"].append(f"frame scan: {repr(e)[:60]}")
-                if box is None:
-                    box = cdp_widget_box(page)
-                if box:
-                    cx, cy = box["click"]
-                    print(f"  → 撳 widget ({cx:.0f},{cy:.0f}) 一次，之後唔再騷擾", flush=True)
-                    try:
-                        human_click(page, cx, cy)   # 2026-09-20：改用似真人嘅點擊序列
-                        res["clicked"] = True
-                        res["click_style"] = "human"
-                        clicked_at = elapsed
-                    except Exception as e:
-                        res["notes"].append(f"click: {repr(e)[:70]}")
-                else:
-                    res["notes"].append(f"t={elapsed:.0f}s 搵唔到 widget")
-        try:
-            page.screenshot(path=f"probe_{engine}.png", full_page=False)
-        except Exception as e:
-            res["notes"].append(f"screenshot: {repr(e)[:60]}")
-        try:
-            res["final_title"] = page.title()
-            res["final_url"] = page.url
-        except Exception:
-            pass
-        if clicked_at is not None:
-            res["clicked_at_s"] = round(clicked_at, 1)
-        try:
-            browser.close()
-        except Exception:
-            pass
-    return res
+        return res
 
 
 def main():
