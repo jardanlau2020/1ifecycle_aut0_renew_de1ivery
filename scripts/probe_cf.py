@@ -164,6 +164,20 @@ def _poll(page, engine, res):
             if box is None:
                 box = cdp_widget_box(page)
             if box is None:
+                if res.get("diag", 0) < 2:           # 只印兩次，免得洗 log
+                    res["diag"] = res.get("diag", 0) + 1
+                    try:
+                        urls = [(f.url or "?").split("?")[0][:70] for f in page.frames]
+                        print(f"  [DIAG] frames({len(urls)})={urls}", flush=True)
+                        print("  [DIAG] Playwright iframe 數=" + str(page.locator("iframe").count())
+                              + " / JS iframe 數="
+                              + str(page.evaluate("() => document.querySelectorAll('iframe').length"))
+                              + " / 有 shadowRoot 嘅元素數="
+                              + str(page.evaluate(
+                                  "() => [...document.querySelectorAll('*')].filter(e => e.shadowRoot).length")),
+                              flush=True)
+                    except Exception as e:
+                        print(f"  [DIAG] 失敗: {repr(e)[:80]}", flush=True)
                 how = ff_widget_click(page)          # Firefox 冇 CDP 嘅後備路
                 if how:
                     print(f"  → 喺 widget frame 內部撳咗（{how}）", flush=True)
