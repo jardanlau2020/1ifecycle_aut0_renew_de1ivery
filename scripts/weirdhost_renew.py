@@ -346,27 +346,69 @@ def get_xsrf_token_from_cookies(sb):
 #  Turnstile 处理（登录阶段）
 # ============================================================
 
-def ts_exists(sb):
+def js_eval(sb, script, default=None, label=""):
+    """執行 JS（統一包成 IIFE，兼容 driver / CDP 兩種模式）。
+
+    2026-09-20 定案：UC reconnect 之後 SeleniumBase 會轉入 CDP 模式，
+    `sb.execute_script()` 直通 CDP `Runtime.evaluate()`，**頂層 `return`
+    會 SyntaxError**（普通 driver.execute_script 會幫你包 function，所以
+    平時冇事）。本檔多個 JS 片段用頂層 return，例外又被 `except: return None`
+    食咗 → 靜默當「搵唔到 Turnstile」，前線只見到「无法获取 Turnstile 坐标」。
+    """
+    s = (script or "").strip()
+    if not s:
+        return default
+    if not s.startswith("("):
+        s = "(function(){\n" + s + "\n})()"
     try:
-        return sb.execute_script("""
-            return !!(
-                document.querySelector('input[name="cf-turnstile-response"]') ||
-                document.querySelector('.cf-turnstile') ||
-                document.querySelector('iframe[src*="challenges.cloudflare.com"]')
-            );
-        """)
-    except:
-        return False
+        return sb.execute_script(s)
+    except Exception as e:
+        if label:
+            print(f"[WARN]   JS[{label}] 執行失敗: {repr(e)[:150]}")
+        return default
+
+
+def cf_page_diag(sb, tag=""):
+    """診斷當前頁面形態（下一次 run 直接睇 log 定案，唔使靠估）。"""
+    info = js_eval(sb, """
+        var out = {
+            url: location.href, title: document.title,
+            has_widget: !!document.querySelector('.cf-turnstile'),
+            has_input: !!document.querySelector('input[name="cf-turnstile-response"]'),
+            has_stage: !!document.querySelector('#challenge-stage, #challenge-form, #cf-chl-widget-container'),
+            iframes: []
+        };
+        var f = document.querySelectorAll('iframe');
+        for (var i = 0; i < f.length && i < 10; i++) {
+            var r = f[i].getBoundingClientRect();
+            out.iframes.push({src: (f[i].src || '').slice(0, 80), x: Math.round(r.x),
+                              y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height)});
+        }
+        out.text = (document.body ? document.body.innerText : '').replace(/\\s+/g, ' ').slice(0, 300);
+        return out;
+    """, default=None, label="cf_page_diag")
+    if info:
+        print(f"[DIAG] {tag} " + json.dumps(info, ensure_ascii=False)[:1000])
+    else:
+        print(f"[DIAG] {tag} JS 診斷失敗（頁面可能未載入）")
+    return info
+
+
+def ts_exists(sb):
+    return bool(js_eval(sb, """
+        return !!(
+            document.querySelector('input[name="cf-turnstile-response"]') ||
+            document.querySelector('.cf-turnstile') ||
+            document.querySelector('iframe[src*="challenges.cloudflare.com"]')
+        );
+    """, default=False, label="ts_exists"))
 
 
 def ts_solved(sb):
-    try:
-        return sb.execute_script("""
-            var i = document.querySelector('input[name="cf-turnstile-response"]');
-            return i && i.value && i.value.length > 20;
-        """)
-    except:
-        return False
+    return bool(js_eval(sb, """
+        var i = document.querySelector('input[name="cf-turnstile-response"]');
+        return !!(i && i.value && i.value.length > 20);
+    """, default=False, label="ts_solved"))
 
 
 def expand_turnstile(sb):
@@ -403,29 +445,26 @@ def expand_turnstile(sb):
 
 
 def focus_turnstile_area(sb):
-    try:
-        sb.execute_script("""
-            const selectors = [
-                '.cf-turnstile',
-                'iframe[src*="challenges.cloudflare"]',
-                'input[name="cf-turnstile-response"]',
-                'label.cb-lb',
-                '.cb-lb',
-                'input[type="checkbox"]'
-            ];
-            for (const selector of selectors) {
-                const el = document.querySelector(selector);
-                if (el) {
-                    el.scrollIntoView({block: 'center', inline: 'center'});
-                    return true;
-                }
+    js_eval(sb, """
+        const selectors = [
+            '.cf-turnstile',
+            'iframe[src*="challenges.cloudflare"]',
+            'input[name="cf-turnstile-response"]',
+            'label.cb-lb',
+            '.cb-lb',
+            'input[type="checkbox"]'
+        ];
+        for (const selector of selectors) {
+            const el = document.querySelector(selector);
+            if (el) {
+                el.scrollIntoView({block: 'center', inline: 'center'});
+                return true;
             }
-            window.scrollTo(0, Math.max(0, document.body.scrollHeight * 0.45));
-            return false;
-        """)
-        time.sleep(0.5)
-    except:
-        pass
+        }
+        window.scrollTo(0, Math.max(0, document.body.scrollHeight * 0.45));
+        return false;
+    """, label="focus_turnstile_area")
+    time.sleep(0.5)
 
 
 def handle_turnstile(sb, timeout=120):
@@ -557,36 +596,50 @@ EXPAND_POPUP_JS = """
 """
 
 def get_turnstile_checkbox_coords(sb):
-    try:
-        return sb.execute_script("""
-            var iframes = document.querySelectorAll('iframe');
-            for (var i = 0; i < iframes.length; i++) {
-                var src = iframes[i].src || '';
-                if (src.includes('cloudflare') || src.includes('turnstile')) {
-                    var rect = iframes[i].getBoundingClientRect();
-                    if (rect.width > 0 && rect.height > 0) {
-                        return {x:rect.x, y:rect.y, width:rect.width, height:rect.height,
-                                click_x:Math.round(rect.x+30), click_y:Math.round(rect.y+rect.height/2)};
-                    }
-                }
+    """攞 Turnstile checkbox 嘅頁面座標（相對 viewport）。
+
+    2026-09-20 改：①改經 js_eval（CDP 模式下頂層 return 會爆，之前靜默返 None）；
+    ②擴闊搜尋（任何 iframe / .cf-turnstile 容器 / input 父鏈 / shadow DOM），
+    並且將「搵唔到」嘅原因寫入 log，唔再靜默。
+    """
+    coords = js_eval(sb, """
+        function visible(el) {
+            var r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+        }
+        function pick(el) {
+            var r = el.getBoundingClientRect();
+            return {x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width),
+                    height: Math.round(r.height),
+                    click_x: Math.round(r.x + 30), click_y: Math.round(r.y + r.height / 2)};
+        }
+        var cf_sel = 'iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]';
+        var hit = document.querySelector(cf_sel);
+        if (hit && visible(hit)) return pick(hit);
+        var widget = document.querySelector('.cf-turnstile, [id*="turnstile"], [class*="turnstile"]');
+        if (widget && visible(widget)) return pick(widget);
+        var input = document.querySelector('input[name="cf-turnstile-response"]');
+        if (input) {
+            var el = input;
+            for (var i = 0; i < 8 && el; i++) {
+                if (visible(el) && el.getBoundingClientRect().width > 100) return pick(el);
+                el = el.parentElement;
             }
-            var input = document.querySelector('input[name="cf-turnstile-response"]');
-            if (input) {
-                var container = input.parentElement;
-                for (var j = 0; j < 5; j++) {
-                    if (!container) break;
-                    var rect = container.getBoundingClientRect();
-                    if (rect.width > 100 && rect.height > 30) {
-                        return {x:rect.x, y:rect.y, width:rect.width, height:rect.height,
-                                click_x:Math.round(rect.x+30), click_y:Math.round(rect.y+rect.height/2)};
-                    }
-                    container = container.parentElement;
-                }
-            }
-            return null;
-        """)
-    except:
+        }
+        var all = document.querySelectorAll('iframe');
+        for (var j = 0; j < all.length; j++) {
+            if (visible(all[j])) return pick(all[j]);
+        }
+        return {error: 'no_turnstile_element', iframes: all.length,
+                body_len: document.body ? document.body.innerText.length : 0};
+    """, default=None, label="get_turnstile_checkbox_coords")
+    if not coords:
+        print("[WARN] 无法获取 Turnstile 坐标（JS 執行失敗）")
         return None
+    if coords.get("error"):
+        print(f"[WARN] 无法获取 Turnstile 坐标（{coords['error']}，頁面 iframe 數={coords.get('iframes')}）")
+        return None
+    return coords
 
 def activate_browser_window():
     try:
@@ -866,7 +919,7 @@ def is_cloudflare_challenge(sb):
     return any(m in src for m in markers)
 
 
-def solve_cf_interstitial(sb, timeout=75):
+def solve_cf_interstitial(sb, timeout=100):
     """處理 Cloudflare 攔截頁（보안 확인 수행 중 / Just a moment）。
 
     唔可以叫 handle_turnstile()：實測 CF 攔截頁上 `ts_exists()` 會回 False
@@ -879,9 +932,12 @@ def solve_cf_interstitial(sb, timeout=75):
     if not is_cloudflare_challenge(sb):
         return True
     print("[INFO]   處理 Cloudflare 攔截頁...")
+    cf_page_diag(sb, tag="[CF 攔截頁進入]")
     start = time.time()
     click_clock = 0
+    rounds = 0
     while time.time() - start < timeout:
+        rounds += 1
         if not is_cloudflare_challenge(sb) or ts_solved(sb):
             print("[INFO]   Cloudflare 攔截頁已通過 ✅")
             return True
@@ -901,8 +957,25 @@ def solve_cf_interstitial(sb, timeout=75):
             except:
                 pass
             click_clock = now
+        if rounds % 12 == 0:
+            # 卡住 30 秒以上：刷新一次（CF 託管挑戰刷一刷有時就過，亦更新 challenge token）
+            try:
+                sb.refresh()
+                print("[INFO]   卡住，刷新頁面再試")
+                time.sleep(3)
+            except Exception as e:
+                print(f"[WARN]   刷新失敗: {repr(e)[:80]}")
         time.sleep(2)
-    return not is_cloudflare_challenge(sb)
+    still_blocked = is_cloudflare_challenge(sb)
+    if still_blocked:
+        # 失敗現場留證：截圖 + 頁面形態（artifact 會 upload *.png）
+        try:
+            sb.save_screenshot("cf_fail.png")
+            print("[INFO]   已保存失敗截圖 cf_fail.png")
+        except Exception as e:
+            print(f"[WARN]   截圖失敗: {repr(e)[:80]}")
+        cf_page_diag(sb, tag=f"[CF 攔截頁失敗，共 {rounds} 輪]")
+    return not still_blocked
 
 
 def goto(sb, url, retries=2, wait=3):
