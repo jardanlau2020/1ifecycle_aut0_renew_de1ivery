@@ -1,0 +1,60 @@
+name: CF Probe (diagnostic)
+
+# 2026-09-20 加：一次性診斷 workflow，唔跟排程、唔係保活。
+# 目的：乾淨瀏覽器（唔做任何頁面改動、只撳一次）分別用 playwright / patchright
+# 開 hub.weirdhost.xyz，睇 cf_clearance 會唔會落地 —— 分清
+# 「我哋自動化太粗暴」vs「GHA runner IP 信譽太低」。
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "要探嘅 URL"
+        required: false
+        default: "https://hub.weirdhost.xyz/"
+      engines:
+        description: "引擎（逗號分隔）"
+        required: false
+        default: "playwright,patchright"
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安裝系統依賴
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb x11-utils fonts-nanum fonts-noto-cjk >/dev/null
+
+      - name: 安裝 python 依賴 + 兩個引擎嘅 Chromium
+        run: |
+          pip install --quiet playwright patchright
+          python -m playwright install --with-deps chromium
+          python -m patchright install chromium || echo "patchright chromium 安裝失敗（ARM 會自己報錯）"
+
+      - name: 跑探針
+        env:
+          PROBE_URL: ${{ github.event.inputs.url }}
+          PROBE_ENGINES: ${{ github.event.inputs.engines }}
+          PROBE_WAIT: "70"
+        run: |
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \
+            python scripts/probe_cf.py 2>&1 | tee probe.log
+        continue-on-error: true
+
+      - name: 上傳截圖 + 結果
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cf-probe
+          path: |
+            probe_*.png
+            probe.log
+            probe_result.json
+          retention-days: 7
