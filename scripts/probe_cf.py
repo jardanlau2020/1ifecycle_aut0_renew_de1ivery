@@ -163,6 +163,14 @@ def _poll(page, engine, res):
                 res["notes"].append(f"frame scan: {repr(e)[:60]}")
             if box is None:
                 box = cdp_widget_box(page)
+            if box is None:
+                how = ff_widget_click(page)          # Firefox 冇 CDP 嘅後備路
+                if how:
+                    print(f"  → 喺 widget frame 內部撳咗（{how}）", flush=True)
+                    res["clicked"] = True
+                    res["click_style"] = "frame-click"
+                    clicked_at = elapsed
+                    continue
             if box:
                 cx, cy = box["click"]
                 print(f"  → 撳 widget ({cx:.0f},{cy:.0f}) 一次，之後唔再騷擾", flush=True)
@@ -191,6 +199,29 @@ def _poll(page, engine, res):
     except Exception:
         pass
     return res
+
+
+def ff_widget_click(page):
+    """Firefox／camoufox 冇 CDP，改用 frame 內部點擊 —— 2026-09-20 加。
+
+    原理：Playwright 由 frame tree 得知 iframe 位置，就算 widget iframe 藏喺
+    closed shadow DOM（JS 搵唔到、CDP 又冇 Firefox 版），frame 內部嘅
+    `element.click()` 都映射得到主頁面嘅正確座標。
+    回傳：成功回「用咗邊個 selector」，撳唔到就 None。
+    """
+    for fr in page.frames:
+        if "challenges.cloudflare.com" not in (fr.url or ""):
+            continue
+        for sel in ("#challenge-stage", "input[type=checkbox]",
+                    ".ctp-checkbox-label", "label", "body"):
+            try:
+                el = fr.query_selector(sel)
+                if el is not None:
+                    el.click(timeout=3000)
+                    return f"frame.click({sel})"
+            except Exception:
+                continue
+    return None
 
 
 def run_camoufox(res):
