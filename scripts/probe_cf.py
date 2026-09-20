@@ -30,6 +30,26 @@ CF_BLOCK_MARKERS = ("잠시만", "Just a moment", "보안 확인", "Un instant",
 sys.stdout.reconfigure(line_buffering=True)
 
 
+def human_click(page, x, y):
+    """盡量似真人嘅點擊序列（2026-09-20 加）。
+
+    背景：fridaydev run 35502154511 改用 patchright 之後，widget 即刻回
+    `Le test a échoué. Rechargez la page et réessayez.` —— CF 主動講「測試失敗」。
+    而 `page.mouse.click()` 係 down→up 零延遲、無中間移動，係典型機器人特徵。
+    真人係：移幾步過去 → 停一停 → 按住 → 百幾毫秒 → 鬆手。
+    """
+    page.mouse.move(max(0, x - 60), max(0, y - 25), steps=4)
+    time.sleep(0.25)
+    page.mouse.move(x - 8, y - 3, steps=6)
+    time.sleep(0.35)
+    page.mouse.move(x, y, steps=3)
+    time.sleep(0.45)          # 停低先撳
+    page.mouse.down()
+    time.sleep(0.12)          # 按住 120ms，唔好 0ms
+    page.mouse.up()
+    time.sleep(0.2)
+
+
 def cdp_widget_box(page):
     """用 CDP pierce 搵 CF widget iframe 嘅 box（closed shadow DOM 都睇得穿）。"""
     try:
@@ -152,12 +172,9 @@ def run_engine(engine):
                     cx, cy = box["click"]
                     print(f"  → 撳 widget ({cx:.0f},{cy:.0f}) 一次，之後唔再騷擾", flush=True)
                     try:
-                        page.mouse.move(cx - 20, cy - 8, steps=5)
-                        time.sleep(0.4)
-                        page.mouse.move(cx, cy, steps=8)
-                        time.sleep(0.3)
-                        page.mouse.click(cx, cy)
+                        human_click(page, cx, cy)   # 2026-09-20：改用似真人嘅點擊序列
                         res["clicked"] = True
+                        res["click_style"] = "human"
                         clicked_at = elapsed
                     except Exception as e:
                         res["notes"].append(f"click: {repr(e)[:70]}")
