@@ -369,7 +369,10 @@ def js_eval(sb, script, default=None, label=""):
 
 
 def cf_page_diag(sb, tag=""):
-    """診斷當前頁面形態（下一次 run 直接睇 log 定案，唔使靠估）。"""
+    """診斷當前頁面形態（下一次 run 直接睇 log 定案，唔使靠估）。
+
+    JS 行唔通（CDP session 死）時會退回 page_source regex，照樣攞到 title/url。
+    """
     info = js_eval(sb, """
         var out = {
             url: location.href, title: document.title,
@@ -389,9 +392,23 @@ def cf_page_diag(sb, tag=""):
     """, default=None, label="cf_page_diag")
     if info:
         print(f"[DIAG] {tag} " + json.dumps(info, ensure_ascii=False)[:1000])
-    else:
-        print(f"[DIAG] {tag} JS 診斷失敗（頁面可能未載入）")
-    return info
+        return info
+    # JS 行唔通 → 用 page_source 補救，唔好白白冇證據
+    src = ""
+    try:
+        src = sb.get_page_source() or ""
+    except Exception as e:
+        print(f"[DIAG] {tag} 連 page_source 都攞唔到: {repr(e)[:100]}")
+    m = re.search(r"<title[^>]*>(.*?)</title>", src, re.S | re.I)
+    title = (m.group(1).strip()[:120] if m else "(冇 title)")
+    try:
+        url = sb.get_current_url()
+    except Exception:
+        url = "(未知)"
+    ifr = re.findall(r'<iframe[^>]+src="([^"]{0,90})"', src)
+    print(f"[DIAG] {tag} JS 行唔通 → url={url}｜title={title!r}｜iframe 數={len(ifr)} | "
+          f"{ifr[:4]}｜source 長度={len(src)}")
+    return None
 
 
 def ts_exists(sb):
@@ -1210,7 +1227,16 @@ def process_single_account(sb, account, account_index):
 
     # Step 1: 过 Cloudflare（登录阶段）
     print(f"[INFO] [步骤1] 访问站点并处理 Cloudflare 验证...")
-    sb.uc_open_with_reconnect(f"https://{DOMAIN}/", reconnect_time=5)
+    # 2026-09-20：改用普通導航。uc_open_with_reconnect() 會 disconnect 再 reconnect
+    # CDP，之後所有 sb.execute_script() 都靜默回 None（run 35496427221 實測：連頁面
+    # 診斷 JS 都攞唔到結果，前端只見到「无法获取 Turnstile 坐标」）——即係話之前
+    # 根本冇辦法睇清頁面，所謂「過唔到 CF」係喺盲嘅狀態下判嘅。
+    try:
+        sb.get(f"https://{DOMAIN}/")
+    except Exception as e:
+        print(f"[WARN]   普通導航失敗({repr(e)[:90]})，退回 uc_open_with_reconnect")
+        sb.uc_open_with_reconnect(f"https://{DOMAIN}/", reconnect_time=5)
+    cf_page_diag(sb, tag="[導航後]")
     if not solve_cf_interstitial(sb):
         print(f"[ERROR] Cloudflare 验证失败")
         result["status"] = "error"
