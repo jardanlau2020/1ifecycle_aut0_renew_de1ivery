@@ -25,16 +25,13 @@ hdr=(-H "Authorization: Bearer ${API_KEY}" -H "Accept: application/json")
 
 list_servers() {
   echo "-- 账号下现役服务器 --"
-  local body
-  if ! body="$(curl -sS "${hdr[@]}" "${CLIENT_API}")"; then
-    echo "   （拉 /api/client 也失败，API key 可能已失效/被撤销）"
-    return 0
-  fi
-  if echo "${body}" | jq -e '.data' >/dev/null 2>&1; then
-    echo "${body}" | jq -r '.data[]?.attributes | "   \(.identifier)   \(.name)   suspended=\(.is_suspended // "?")"'
-  else
-    echo "   （返回非服务器列表）${body:0:400}"
-  fi
+  local body code
+  code="$(curl -sS -o /tmp/acct.json -w '%{http_code}' "${hdr[@]}" "${CLIENT_API}")" || code=000
+  body="$(cat /tmp/acct.json 2>/dev/null || true)"
+  echo "   GET /api/client -> HTTP ${code}, ${#body} bytes"
+  echo "   raw: ${body:0:1200}"
+  echo "${body}" | jq -r '.data[]?.attributes | "   id=\(.identifier)  name=\(.name)  suspended=\(.is_suspended // "?")"' 2>/dev/null \
+    || echo "   （jq 解析失败，见上面 raw）"
 }
 
 echo "== MonkeyBytes auto-renew check (server ${SERVER_ID}) =="
