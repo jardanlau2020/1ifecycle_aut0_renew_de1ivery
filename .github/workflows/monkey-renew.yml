@@ -16,5 +16,7 @@ jobs:
       - name: Run renewal script
         env:
           MONKEY_API_KEY: ${{ secrets.MONKEY_API_KEY }}
-          SERVER_ID: "2533c753"
+          # 2026-09-23 修：原本写死 "2533c753"（旧曼谷机）——该 ID 已被平台删掉，
+          # 09-18~09-22 连续 5 单 404。改读 secret，换机只需更新 secret，不用改代码。
+          SERVER_ID: ${{ secrets.MONKEY_SERVER_IDENTIFIER }}
         run: bash scripts/check_and_renew.sh
