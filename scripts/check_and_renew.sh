@@ -42,6 +42,16 @@ if [ "${HTTP_CODE}" != "200" ]; then
   cat "${LIFECYCLE_TMP}" 2>/dev/null; echo
   [ "${HTTP_CODE}" = "404" ] && echo "!! 404 通常 = 该 server ID 已不存在（被删/重建），要换新 ID"
   list_servers
+  # 2026-09-25 加：404 但帳號下 0 台伺服器 = 部機已經唔存在（帳號清空），
+  # 唔係腳本壞 —— 冇任何嘢可以續，日日標紅只係噪音。exit 0 + 講清楚，
+  # 開返新機時只需更新 secret MONKEY_SERVER_IDENTIFIER（唔使改代碼）。
+  COUNT="$(curl -sS "${hdr[@]}" "${CLIENT_API}" 2>/dev/null | jq -r '.meta.pagination.total // (.data | length) // empty' 2>/dev/null)"
+  if [ "${COUNT}" = "0" ]; then
+    echo "ℹ️ 帳號下 0 台伺服器 → 冇嘢可以續，收工（exit 0）"
+    echo "   要恢復自動續期：去 dash.monkey-network.xyz 開返機，再更新 secret"
+    echo "   MONKEY_SERVER_IDENTIFIER = 新機嘅 8 位 identifier。"
+    exit 0
+  fi
   exit 1
 fi
 
