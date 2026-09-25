@@ -3,6 +3,9 @@ name: MonkeyBytes Auto Renew
 on:
   schedule:
     # 每日 10:00 UTC = 18:00 香港時間（15 日週期 + 7 日窗口，每日檢查綽綽有餘）
+    # ⚠️ 2026-09-25 現況：MonkeyBytes 帳號下 0 台伺服器（舊曼谷機 2533c753 早被平台刪），
+    #    lifecycle API 回 404。腳本已改成「0 台 → 出提示 + exit 0」，唔再標紅。
+    #    要恢復：開新機 → 更新 secret MONKEY_SERVER_IDENTIFIER。
     - cron: "0 10 * * *"
   workflow_dispatch: # 喺 Actions 分頁可以手動觸發
 
