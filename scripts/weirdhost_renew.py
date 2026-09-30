@@ -1654,69 +1654,103 @@ def process_single_account(sb, account, account_index):
 #  单账号 TG 通知
 # ============================================================
 
-def send_account_notification(result):
+def now_local():
+    """UTC+8 當地時間 MM-DD HH:MM（runner 係 UTC）"""
+    return time.strftime("%m-%d %H:%M", time.gmtime(time.time() + 8 * 3600))
+
+
+def clip_text(text, limit):
+    """壓平空白並截短（超出用 … 收尾）"""
+    s = " ".join(str(text or "").split())
+    return s if len(s) <= limit else s[:limit - 1] + "…"
+
+
+def fmt_expiry(value):
+    """到期時間 → MM-DD HH:MM 或 MM-DD（Unknown／解析唔到回空字串）"""
+    t = str(value or "").strip()
+    if not t or t == "Unknown":
+        return ""
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})", t)
+    if m:
+        return f"{m.group(2)}-{m.group(3)} {m.group(4)}:{m.group(5)}"
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", t)
+    if m:
+        return f"{m.group(2)}-{m.group(3)}"
+    return t[:12]
+
+
+def build_account_summary(result):
+    """瘦身版通知：統計一行 + 每台伺服器一行（tg_notify 用 HTML parse_mode，
+    但呢度內容保持純文字，唔加任何標籤）。"""
     email = result.get("email", "Unknown")
     remark = result.get("remark", "")
-    cookie_updated = result.get("cookie_updated", False)
     servers = result.get("servers", [])
     status = result.get("status", "unknown")
 
-    account_display = email if email and email != "Unknown" else remark
-    lines = [f"账号：{account_display}"]
+    acct = mask_email(email) if (email and email != "Unknown") else (remark or "帳號")
+    items = []
+    n_ok = n_skip = n_bad = 0
+
+    def add(name, text, kind):
+        nonlocal n_ok, n_skip, n_bad
+        items.append(f"▪️ {name} · {text}")
+        if kind == "ok":
+            n_ok += 1
+        elif kind == "bad":
+            n_bad += 1
+        else:
+            n_skip += 1
 
     if status == "cookie_invalid":
-        lines.append("状态：⚠️ Cookie 已失效，请及时更新 WEIRDHOST_COOKIE_*")
-        screenshot = None
+        add(acct, "❌ Cookie 已失效，请及时更新 WEIRDHOST_COOKIE_*", "bad")
     elif status == "cf_blocked":
-        lines.append("状态：🛡️ 卡在 Cloudflare 验证页（唔等於 Cookie 失效，无需换 cookie）")
-        screenshot = None
+        add(acct, "❌ 卡在 Cloudflare 验证页（非 Cookie 失效）", "bad")
     elif status == "no_server":
-        lines.append("状态：⚠️ 没有服务器")
-        screenshot = None
+        add(acct, "⏭️ 未可續（冇伺服器）", "skip")
+    elif not servers:
+        add(acct, f"❌ {clip_text(result.get('message') or status, 60)}", "bad")
     else:
         for s in servers:
-            lines.append("")
-            lines.append(f"服务器：{s.get('server_id', '')}")
-            srv_status = s["status"]
-
+            name = s.get("server_name") or mask_server_id(s.get("server_id", "")) or "伺服器"
+            srv_status = s.get("status", "unknown")
             if srv_status == "success":
-                lines.append("状态：🟢 续期成功")
-                new_exp = s.get("new_expiry", "Unknown")
-                lines.append(f"剩余：{calculate_remaining_time(new_exp)}")
-                msg = s.get("message", "")
-                if msg and "延长" in msg:
-                    lines.append(f"延长：{msg}")
+                exp = fmt_expiry(s.get("new_expiry"))
+                text = "✅ 已續期" + (f" → {exp}" if exp else "")
+                delta = ""
+                m = re.search(r"([\d.]+)\s*(?:小时|h)", s.get("message") or "")
+                if m:
+                    delta = f"延長 {float(m.group(1)):.1f}h"
                 else:
-                    orig = s.get("original_expiry", "Unknown")
-                    new = s.get("new_expiry", "Unknown")
-                    if orig != "Unknown" and new != "Unknown":
-                        odt = parse_expiry_to_datetime(orig)
-                        ndt = parse_expiry_to_datetime(new)
-                        if odt and ndt and ndt > odt:
-                            diff_h = (ndt - odt).total_seconds() / 3600
-                            lines.append(f"延长：延长{diff_h:.1f}h")
+                    odt = parse_expiry_to_datetime(s.get("original_expiry", ""))
+                    ndt = parse_expiry_to_datetime(s.get("new_expiry", ""))
+                    if odt and ndt and ndt > odt:
+                        delta = f"延長 {(ndt - odt).total_seconds() / 3600:.1f}h"
+                add(name, text + (f" · {delta}" if delta else ""), "ok")
             elif srv_status == "cooldown":
-                lines.append("状态：⏳ 冷却期")
-                expiry = s.get("original_expiry", "Unknown")
-                lines.append(f"剩余：{calculate_remaining_time(expiry)}")
-                lines.append("提示：冷却中，请稍后再试")
+                exp = fmt_expiry(s.get("original_expiry"))
+                add(name, "⏭️ 未可續（冷卻中）" + (f" · 到期 {exp}" if exp else ""), "skip")
             elif srv_status == "skipped":
-                lines.append("状态：⏭️ 跳过")
-                expiry = s.get("original_expiry", s.get("new_expiry", "Unknown"))
-                lines.append(f"剩余：{calculate_remaining_time(expiry)}")
-                lines.append(f"原因：{s.get('message', '未知')}")
+                exp = fmt_expiry(s.get("original_expiry") or s.get("new_expiry"))
+                # 原因 ≤ 12 字：截短時先剪走括號補充（避免巢狀括號）
+                reason = clip_text((s.get("message") or "未可續").split("（")[0], 12)
+                add(name, f"⏭️ 未可續（{reason}）" + (f" · 到期 {exp}" if exp else ""), "skip")
             else:
-                lines.append(f"状态：❌ {srv_status}")
-                lines.append(f"信息：{s.get('message', '未知')}")
+                add(name, f"❌ {clip_text(s.get('message') or srv_status, 60)}", "bad")
 
-    if cookie_updated:
-        lines.append("")
-        lines.append("🔑 Cookie 已自动更新")
+    lines = ["🎮 Weirdhost 續期（{}） ｜ {} ｜ ✅ {} ｜ ⏭️ {} ｜ ❌ {}".format(
+        acct, now_local(), n_ok, n_skip, n_bad)]
+    lines.extend(items)
+    if result.get("cookie_updated"):
+        lines.append("🔑 Cookie 已自動更新")
+    if n_bad:
+        lines.append("⚠️ 睇 workflow log 排查")
+    return "\n".join(lines)
 
-    lines.append("")
-    lines.append("Weirdhost Auto Renew")
 
-    message = "\n".join(lines)
+def send_account_notification(result):
+    servers = result.get("servers", [])
+    message = build_account_summary(result)
+    print(message)
 
     screenshot = None
     for s in servers:
