@@ -1,2 +1,33 @@
+# ── secrets ───────────────────────────────────────────────
 .env
+.env.*
+!.env.example
 *.token
+
+# ── Python ────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+
+# ── virtualenv ────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── tool caches ───────────────────────────────────────────
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ── 运行期产物（workflow 上传为 artifacts，不入库）─────────
+*.log
+probe.log
+probe_result.json
+probe_*.png
+*.png
+latest_logs/
