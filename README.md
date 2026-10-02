@@ -31,8 +31,16 @@
 关键约定：**只有 `FAILED` 才 `exit 1`**。上游 5xx / 超时 / Cloudflare 挑战页
 一律记 `TRANSIENT` 并 `exit 0`，不标红——日更 + 续期窗口足够容忍漏一次。
 
-`aclclouds-renew.yml` 直接复用了 renew-kit 的 composite action
-（`renew-kit/.github/actions/renew@v0.4.2`），依赖安装与 renewkit 注入无需各仓库重写。
+> **例外：Weirdhost 的 Cloudflare 挑战页记 `FAILED`。**
+> 上面的约定针对的是「换个出口/重试就能过的」上游抖动。Weirdhost 撞上的是
+> Cloudflare **交互式**验证页，需要人手勾 checkbox，四个出口实测全 403 ——
+> 它每次都会撞上，不是抖动。记 `TRANSIENT` 等于永久绿灯（正是它 2026-09-18
+> 停排程的原因）。所以那边映射成 `FAILED`，让红灯真的亮。
+> 见 `scripts/weirdhost_renew.py` 的 `_STATUS_OUTCOME`。
+
+`aclclouds-renew.yml` 与 `weirdhost-auto-renew.yml` 都直接复用 renew-kit 的
+composite action（`renew-kit/.github/actions/renew@v0.5.3`），依赖安装、renewkit
+注入、失败兜底无需各仓库重写。
 
 ## 自动续期原理
 
@@ -78,13 +86,44 @@ Selenium + Chrome (headless) + CDP 注入 __Host-aclclouds_session
 
 ### Weirdhost — `weirdhost-auto-renew.yml`
 
-脚本 `scripts/weirdhost_renew.py`（SeleniumBase + Xvfb）。
+脚本 `scripts/weirdhost_renew.py`（SeleniumBase + Xvfb，已迁到 renew-kit）。
+Secret `WEIRDHOST_COOKIE_1` ~ `_5`（多账号，格式 `备注-----remember_web_xxx=yyy`）。
+
+```python
+过 Cloudflare（SeleniumBase UC 模式 + CDP pierce 点 checkbox）
+  → 注入 remember_web Cookie
+  → GET /api/client?page=1 取服务器列表
+  → 逐台读到期时间，窗口内才点「연장하기」
+  → 处理结果弹窗，再取一次 expire 确认「变长了」
+  → 每处理完一个账号发一条 TG（带面板截图）
+```
 
 **已停排程。** hub.weirdhost.xyz 上了 Cloudflare 交互式验证页
 （"Performing security verification"，需人手勾 checkbox），实测 GHA runner
 （Azure）、NAS 容器、Hetzner FI、Tencent SG 四个出口全部 403，连真浏览器都卡在
 挑战页。属 human-only 步骤，继续自动跑只会每日发假红灯。
 现改为人工续期 + 定时提醒；要复测就手动 `workflow_dispatch`。
+
+迁移到 renew-kit 时改掉的东西：
+
+- **退出码从「四个裸 `sys.exit(1)`」改成结果分类**。原来的 fatal 名单是
+  `("error", "cookie_invalid", "cf_blocked")`，写死在收尾处；现在是
+  `_STATUS_OUTCOME` 一张显式映射表，`exit_code` 由 `RenewReport` 统一决定。
+  语义保持不变 —— 包括 `timeout` 仍然不标红（它是 `UNKNOWN`：按钮点了、
+  结果读不到，不是「跳过」）。
+- **`timeout` 归 `UNKNOWN` 而不是 `SKIPPED`**：操作已执行、结果未确认，
+  通知里会说「未确认」而不是「状态良好」。
+- **`parse_expiry_to_datetime()` 补了 ISO 兜底**。面板页面给
+  `2026-10-31 12:00:00`（空格），详情接口给 `2026-10-31T12:00:00`（T），
+  原来只认空格 —— 于是「new > original 才算续上」这句在接口那条路上恒为
+  `None`，只能退回信弹窗状态。带时区的值统一摘掉 `tzinfo`（全文件用 naive
+  的 `datetime.now()` 比较，混用 aware 会直接 `TypeError`）。
+- **HTML 通知里的动态内容会转义**。原来把 `repr(e)` 原样塞进 `<code>`，
+  异常信息里只要有一个 `&` 或 `<`，整条通知会被 Telegram 以 400 丢掉。
+- **`DRY_RUN=1`**：只检查、不点击，也不发 TG（`sendPhoto` 不走 kit，所以那边
+  单独加了闸门）。
+- 每账号的 TG 文案（`build_account_summary`）**留在本仓库** —— 它是业务排版，
+  kit 不该知道「Weirdhost 账号」长什么样。`sendPhoto` 同理没往上放。
 
 ### 排障工具
 
@@ -122,24 +161,35 @@ ACLCLOUDS_SESSION_COOKIE=*** DRY_RUN=1 python3 scripts/aclclouds_renew.py
 
 # Weirdhost 续期
 WEIRDHOST_COOKIE_1=*** python scripts/weirdhost_renew.py
+
+# Weirdhost 只检查不点击（验证 Cookie 是否还有效）
+WEIRDHOST_COOKIE_1=*** DRY_RUN=1 python scripts/weirdhost_renew.py
 ```
 
 脚本依赖 `renewkit`：
 
 ```bash
-pip install "renewkit @ git+https://github.com/jardanlau2020/renew-kit@v0.4.2"
-pip install selenium          # ACLClouds 需要
+pip install "renewkit @ git+https://github.com/jardanlau2020/renew-kit@v0.5.3"
+pip install selenium                      # ACLClouds 需要
+pip install seleniumbase aiohttp pynacl   # Weirdhost 需要
 ```
 
 ## 验收测试
 
 ```bash
 python .verify/verify_aclclouds.py
+python .verify/verify_weirdhost.py
 ```
 
-不碰真浏览器、不发网络请求，用替身把 ACLClouds 脚本的纯逻辑、`run()` 场景矩阵
-（含「读不到剩余时间绝不点击」「未到窗口绝不点击」两条不变量）、退出码语义，
-以及 workflow / README 与代码的一致性全部断言一遍。改脚本后先跑这个。
+不碰真浏览器、不发网络请求，用替身把脚本的纯逻辑、场景矩阵、退出码语义，
+以及 workflow / README 与代码的一致性全部断言一遍。改脚本后先跑这两个。
+
+- `verify_aclclouds.py` —— ACLClouds。重点守「读不到剩余时间绝不点击」
+  「未到窗口绝不点击」两条不变量。
+- `verify_weirdhost.py` —— Weirdhost。重点守「`error`/`cookie_invalid`/
+  `cf_blocked` 必须标红」「`timeout` 不标红」「迁移掉的本地 `now_local`/
+  `clip_text`/裸 `sys.exit(1)` 不得回归」「workflow 不得恢复排程」。
+  本机没有 seleniumbase / aiohttp 时会自动塞最小替身，不需要装浏览器。
 
 ## 目录结构
 
@@ -152,10 +202,11 @@ python .verify/verify_aclclouds.py
 scripts/
   aclclouds_renew.py            # ACLClouds 续期（renew-kit）
   check_and_renew.sh            # Monkey 续期
-  weirdhost_renew.py            # Weirdhost 续期
+  weirdhost_renew.py            # Weirdhost 续期（renew-kit）
   probe_cf.py / proxy_up.py     # 排障
 .verify/
   verify_aclclouds.py           # ACLClouds 迁移验收 harness
+  verify_weirdhost.py           # Weirdhost 迁移验收 harness
 lifecycle_renewal_config.example.json   # 纯提醒模式的配置示例（非自动化路径）
 wasmer_app/                             # 与续期无关的历史遗留（Wasmer 天气卡片应用）
 ```

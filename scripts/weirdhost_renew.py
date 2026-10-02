@@ -1,5 +1,44 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""Weirdhost 自动续期 —— 已迁移到 renew-kit。
+
+公共部分交给 renewkit，本文件只留 Weirdhost 的业务逻辑：
+
+    过 Cloudflare → 注入 remember_web Cookie → 读服务器列表
+    → 逐个点「연장하기」→ 处理 Turnstile / 结果弹窗 → 校验到期时间
+
+迁移掉的东西：
+    · now_local()  → renewkit.timeutil.now_local
+    · clip_text()  → renewkit.shorten
+    · fmt_expiry() → renewkit.timeutil.format_expiry（外面套一层 Unknown 哨兵过滤）
+    · sync_tg_notify() → renewkit.notify.send（DRY_RUN 闸门、4000 字截断、
+      发送失败不影响结论，全在 kit 里；本文件不再自己判 TG_BOT_TOKEN）
+    · 四个裸 sys.exit(1) → 结果分类 + RenewReport.exit_code
+    · 手写的 `fatal = [...]` 名单 → Outcome 映射表（见 _STATUS_OUTCOME）
+
+刻意没走 kit 的两处：
+    · sendPhoto（把面板截图附在通知上）。kit 只收「各仓库都在重复实现」的部分，
+      而目前只有本仓库需要这个；workflow 也会把 *.png 传成 artifact，图不会丢。
+    · RenewReport.finish()。本仓库是「每个账号处理完立刻发一条带截图的 TG」，
+      run 级别再来一条总览就是重复；总览已经打在 log 里了。所以只取 exit_code。
+
+行为变化（有意为之）：
+    · `timeout` 从「不 fatal」明确归到 UNKNOWN —— 操作已执行、结果读不到，
+      语义上就是「未确认」，而不是「跳过」。两者都不标红，与迁移前一致。
+    · 两处 HTML 通知里的动态内容现在会转义（原来直接把 repr(e) 塞进 <code>，
+      一旦异常信息里带 & 或 < 整条通知会被 Telegram 400 拒掉）。
+    · 支持 DRY_RUN=1：只检查、不点击，也不发 TG（用来验证 Cookie 还有没有效）。
+    · parse_expiry_to_datetime() 现在也认 ISO 的 `T` 分隔（面板页面用空格、
+      详情接口用 T，原来只认空格，导致接口那条路的「到期时间有没有变长」
+      比较永远为 None）。
+
+用法（环境变量）：
+    WEIRDHOST_COOKIE_1 ~ WEIRDHOST_COOKIE_5   `备注-----remember_web_xxx=yyy`，或纯 Cookie
+    TG_BOT_TOKEN / TG_CHAT_ID                 Telegram 通知（可选）
+    REPO_TOKEN / GITHUB_REPOSITORY            Cookie 自动回写 secret（可选）
+    DRY_RUN=1                                 只检查不点击
+"""
+from __future__ import annotations
 
 import os
 import sys
@@ -16,6 +55,10 @@ from urllib.parse import unquote
 
 from seleniumbase import SB
 
+from renewkit import Outcome, RenewReport, TargetResult, shorten
+from renewkit import env, notify
+from renewkit.timeutil import format_expiry, now_local
+
 try:
     from nacl import encoding, public
     NACL_AVAILABLE = True
@@ -24,10 +67,14 @@ except ImportError:
 
 sys.stdout.reconfigure(line_buffering=True)
 
+SERVICE = "Weirdhost"
+
 BASE_URL = "https://hub.weirdhost.xyz/server/"
 API_BASE_URL = "https://hub.weirdhost.xyz/api/client"
 DOMAIN = "hub.weirdhost.xyz"
-MAX_COOKIE_COUNT = 5
+MAX_COOKIE_COUNT = env.get_int("WEIRDHOST_MAX_COOKIE_COUNT", 5)
+
+DRY_RUN = env.dry_run()
 
 RENEWAL_BUTTON_SELECTORS = [
     "//button//span[contains(text(), '연장하기')]/parent::button",
@@ -110,14 +157,33 @@ def calculate_remaining_time(expiry_str):
 
 
 def parse_expiry_to_datetime(expiry_str):
+    """把面板的到期时间解析成 naive datetime；解析不到返回 None。
+
+    面板和接口给的是两种写法：
+        · 页面文本 / 列表接口   `2026-10-31 12:00:00`（空格分隔）
+        · 详情接口的 expire     `2026-10-31T12:00:00`（ISO 的 T）
+    原来只认第一种，于是走接口那条路上 parse_expiry_to_datetime() 恒为 None，
+    后果有两个：
+        · 1485 行那句「new_dt > original_dt 才算真的续上」永远进不去，
+          只能退回信弹窗状态 —— 和 zampto 那边「别看状态码、比时间戳」
+          是同一个坑；
+        · get_remaining_days() 恒为 None，续期窗口判断少一路依据。
+    这里补上 fromisoformat 兜底，并把带时区的值统一摘掉 tzinfo ——
+    全文件都用 naive 的 datetime.now() 比较，混用 aware 会直接 TypeError。
+    """
     if not expiry_str or expiry_str == "Unknown":
         return None
-    for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]:
+    t = str(expiry_str).strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
         try:
-            return datetime.strptime(expiry_str.strip(), fmt)
+            return datetime.strptime(t, fmt)
         except ValueError:
             continue
-    return None
+    try:
+        dt = datetime.fromisoformat(t)
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=None) if dt.tzinfo else dt
 
 
 def get_remaining_days(expiry_str):
@@ -219,25 +285,29 @@ def detect_accounts():
 #  Telegram 通知
 # ============================================================
 
-async def tg_notify(message):
-    token = os.environ.get("TG_BOT_TOKEN")
-    chat_id = os.environ.get("TG_CHAT_ID")
-    if not token or not chat_id:
-        print("[INFO] 未配置 TG_BOT_TOKEN 或 TG_CHAT_ID，跳过通知")
-        return
-    async with aiohttp.ClientSession() as session:
-        try:
-            await session.post(
-                f"https://api.telegram.org/bot{token}/sendMessage",
-                json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
-            )
-        except Exception as e:
-            print(f"[ERROR] TG 发送失败: {e}")
+def esc_html(text) -> str:
+    """转义 Telegram HTML parse_mode 的保留字符。
+
+    parse_mode=HTML 只认 <b>/<i>/<code>/<a> 这几个标签，其余内容里的
+    & < > 必须自己转义 —— 否则 Telegram 直接 400，整条通知发不出去。
+    原来的代码把 repr(e) 原样塞进 <code>，异常信息里只要有一个 < 就静默丢消息。
+    """
+    return (str(text or "").replace("&", "&amp;")
+            .replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def notify_html(message: str) -> bool:
+    """发一条 HTML 通知（内容里的动态部分请先过 esc_html）。
+
+    DRY_RUN 闸门、失败不影响结论都在 renewkit.notify 里；这里只负责
+    「让调用点读起来还是原来那个名字」。
+    """
+    return notify.send(message, parse_mode="HTML")
 
 
 async def tg_notify_photo(photo_path, caption=""):
-    token = os.environ.get("TG_BOT_TOKEN")
-    chat_id = os.environ.get("TG_CHAT_ID")
+    """把面板截图当图片发出去（kit 没有 sendPhoto，理由见模块 docstring）。"""
+    token, chat_id = notify.config()
     if not token or not chat_id or not os.path.exists(photo_path):
         return
     async with aiohttp.ClientSession() as session:
@@ -247,14 +317,9 @@ async def tg_notify_photo(photo_path, caption=""):
                 data.add_field("chat_id", chat_id)
                 data.add_field("photo", f, filename=os.path.basename(photo_path))
                 data.add_field("caption", caption)
-                data.add_field("parse_mode", "HTML")
                 await session.post(f"https://api.telegram.org/bot{token}/sendPhoto", data=data)
         except Exception as e:
             print(f"[ERROR] TG 图片发送失败: {e}")
-
-
-def sync_tg_notify(message):
-    asyncio.run(tg_notify(message))
 
 
 def sync_tg_notify_photo(photo_path, caption=""):
@@ -1654,34 +1719,25 @@ def process_single_account(sb, account, account_index):
 #  单账号 TG 通知
 # ============================================================
 
-def now_local():
-    """UTC+8 當地時間 MM-DD HH:MM（runner 係 UTC）"""
-    return time.strftime("%m-%d %H:%M", time.gmtime(time.time() + 8 * 3600))
-
-
-def clip_text(text, limit):
-    """壓平空白並截短（超出用 … 收尾）"""
-    s = " ".join(str(text or "").split())
-    return s if len(s) <= limit else s[:limit - 1] + "…"
-
-
 def fmt_expiry(value):
-    """到期時間 → MM-DD HH:MM 或 MM-DD（Unknown／解析唔到回空字串）"""
+    """到期時間 → MM-DD HH:MM 或 MM-DD；哨兵值／解析唔到回空字串。
+
+    解析本身交 renewkit.timeutil.format_expiry，呢度只係多一層過濾：
+    kit 對解析唔到嘅值係「原樣回前 19 字」，而 Weirdhost 個面板真係會出
+    字符串 "Unknown"，直接顯示出嚟就好難睇。
+    """
     t = str(value or "").strip()
-    if not t or t == "Unknown":
+    if not t or t.lower() == "unknown":
         return ""
-    m = re.match(r"(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})", t)
-    if m:
-        return f"{m.group(2)}-{m.group(3)} {m.group(4)}:{m.group(5)}"
-    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", t)
-    if m:
-        return f"{m.group(2)}-{m.group(3)}"
-    return t[:12]
+    return format_expiry(t)
 
 
 def build_account_summary(result):
-    """瘦身版通知：統計一行 + 每台伺服器一行（tg_notify 用 HTML parse_mode，
-    但呢度內容保持純文字，唔加任何標籤）。"""
+    """單個帳號的通知文案：統計一行 + 每台伺服器一行。
+
+    呢個係本倉庫嘅業務排版（kit 唔應該知道「Weirdhost 帳號」長咩樣），
+    所以留喺呢度；只係把共用嘅小工具換成 kit 嘅版本。
+    """
     email = result.get("email", "Unknown")
     remark = result.get("remark", "")
     servers = result.get("servers", [])
@@ -1708,7 +1764,7 @@ def build_account_summary(result):
     elif status == "no_server":
         add(acct, "⏭️ 未可續（冇伺服器）", "skip")
     elif not servers:
-        add(acct, f"❌ {clip_text(result.get('message') or status, 60)}", "bad")
+        add(acct, f"❌ {shorten(result.get('message') or status, 60)}", "bad")
     else:
         for s in servers:
             name = s.get("server_name") or mask_server_id(s.get("server_id", "")) or "伺服器"
@@ -1732,10 +1788,10 @@ def build_account_summary(result):
             elif srv_status == "skipped":
                 exp = fmt_expiry(s.get("original_expiry") or s.get("new_expiry"))
                 # 原因 ≤ 12 字：截短時先剪走括號補充（避免巢狀括號）
-                reason = clip_text((s.get("message") or "未可續").split("（")[0], 12)
+                reason = shorten((s.get("message") or "未可續").split("（")[0], 12)
                 add(name, f"⏭️ 未可續（{reason}）" + (f" · 到期 {exp}" if exp else ""), "skip")
             else:
-                add(name, f"❌ {clip_text(s.get('message') or srv_status, 60)}", "bad")
+                add(name, f"❌ {shorten(s.get('message') or srv_status, 60)}", "bad")
 
     lines = ["🎮 Weirdhost 續期（{}） ｜ {} ｜ ✅ {} ｜ ⏭️ {} ｜ ❌ {}".format(
         acct, now_local(), n_ok, n_skip, n_bad)]
@@ -1748,28 +1804,91 @@ def build_account_summary(result):
 
 
 def send_account_notification(result):
+    """一個帳號處理完就發一條（有截圖就附圖）。
+
+    文案本身係純文字（見 build_account_summary），所以唔傳 parse_mode ——
+    面板返回嘅 message 可能含 & / <，帶住 HTML 解析會被 Telegram 400 拒掉。
+    """
     servers = result.get("servers", [])
     message = build_account_summary(result)
     print(message)
 
     screenshot = None
     for s in servers:
-        if s["status"] in ("success", "cooldown", "error", "timeout"):
+        if s.get("status") in ("success", "cooldown", "error", "timeout"):
             if s.get("screenshot") and os.path.exists(s["screenshot"]):
                 screenshot = s["screenshot"]
                 break
 
-    if screenshot:
+    # 演練時唔發圖：notify.send 自己會處理 DRY_RUN，但 sendPhoto 唔經 kit，
+    # 所以要喺呢度補一次閘門，否則 DRY_RUN=1 照樣會把截圖發出去。
+    if screenshot and not DRY_RUN:
         sync_tg_notify_photo(screenshot, message)
     else:
-        sync_tg_notify(message)
+        notify.send(message)
 
 
 # ============================================================
 #  主函数
 # ============================================================
 
-def add_server_time():
+#: process_single_account 的 status → renewkit 的结果语义。
+#
+# 这一层替代了原来的 `fatal = [r for r in results if r["status"] in
+# ("error", "cookie_invalid", "cf_blocked")]`：把「哪个算错」从一处硬编码的
+# 名单变成一张显式的映射表，顺带把 kit 的语义（icon / 文案）接上。
+#
+# 只有 FAILED 会让 job 标红，所以：
+#   · success                        -> RENEWED
+#   · skipped / cooldown / no_server -> SKIPPED（正常，无需操作）
+#   · timeout                        -> UNKNOWN（点了按钮但 90s 没等到结论；
+#                                       操作已执行、结果读不到，正是 UNKNOWN 的
+#                                       语义。原名单里也没有它 —— 保持不标红）
+#   · cookie_invalid                 -> FAILED（要人去更新 secret）
+#   · cf_blocked                     -> FAILED（CF 交互式验证页要人手剔 checkbox，
+#                                       见 workflow 顶部 2026-09-18 的说明；这里刻意
+#                                       不用 TRANSIENT，因为它不是「重试就好」的上游
+#                                       抖动，而是每次都会撞上的硬闸门 —— 映射成
+#                                       TRANSIENT 就等于永久绿灯）
+#   · error                          -> FAILED（含「CF 验证页未通过」与
+#                                       「N/M 个服务器失败」，都不是重试能解决的）
+_STATUS_OUTCOME = {
+    "success": Outcome.RENEWED,
+    "skipped": Outcome.SKIPPED,
+    "cooldown": Outcome.SKIPPED,
+    "no_server": Outcome.SKIPPED,
+    "timeout": Outcome.UNKNOWN,
+    "cookie_invalid": Outcome.FAILED,
+    "cf_blocked": Outcome.FAILED,
+    "error": Outcome.FAILED,
+}
+
+
+def _outcome_of(result) -> Outcome:
+    """查表；没见过的 status 一律 UNKNOWN（不标红，但通知里会说「未确认」）。"""
+    return _STATUS_OUTCOME.get(result.get("status"), Outcome.UNKNOWN)
+
+
+def _account_label(result) -> str:
+    """给报告用的一行名字：优先备注，其次打码邮箱。"""
+    return result.get("remark") or mask_email(result.get("email", "")) or "帳號"
+
+
+def _build_report(results, extra=None) -> RenewReport:
+    """把结果列表包成 RenewReport（只取它的 exit_code）。"""
+    report = RenewReport(SERVICE)
+    for r in (extra or []):
+        report.add_result(r)
+    for r in results:
+        report.add_result(TargetResult(
+            name=_account_label(r),
+            outcome=_outcome_of(r),
+            detail=shorten(r.get("message") or "", 120)))
+    return report
+
+
+def add_server_time() -> int:
+    """跑一轮。返回进程退出码（0 = 无需人介入）。"""
     accounts = detect_accounts()
 
     if not accounts:
@@ -1783,18 +1902,20 @@ def add_server_time():
         print("  remember_web_59ba36addc2b2f940CCCC=XXXXXXXXXXX")
         print("=" * 60)
 
-        sync_tg_notify(
+        notify_html(
             "🔔 <b>Weirdhost 续期</b>\n\n"
             "❌ 未检测到任何有效的 WEIRDHOST_COOKIE_N\n\n"
             "请在 GitHub Secrets 中设置:\n"
             "<code>WEIRDHOST_COOKIE_1</code>\n"
             "格式: <code>备注-----remember_web_xxx=yyy</code>"
         )
-        sys.exit(1)
+        return _build_report([], extra=[TargetResult(
+            name="凭证", outcome=Outcome.FAILED,
+            detail="未检测到 WEIRDHOST_COOKIE_1~5")]).exit_code
 
     print("=" * 60)
     print(f"[INFO] Weirdhost 自动续期")
-    print(f"[INFO] 共 {len(accounts)} 个账号")
+    print(f"[INFO] 共 {len(accounts)} 个账号 | dry_run={DRY_RUN}")
     print("=" * 60)
 
     results = []
@@ -1834,8 +1955,12 @@ def add_server_time():
         traceback.print_exc()
 
         if not results:
-            sync_tg_notify(f"🔔 <b>Weirdhost</b>\n\n❌ 浏览器启动失败\n\n<code>{repr(e)}</code>")
-        sys.exit(1)
+            # esc_html：异常信息里可能有 & 或 <，不转义整条通知会被 Telegram 400 丢掉
+            notify_html("🔔 <b>Weirdhost</b>\n\n❌ 浏览器启动失败\n\n"
+                        f"<code>{esc_html(shorten(repr(e), 200))}</code>")
+        return _build_report(results, extra=[TargetResult(
+            name="浏览器", outcome=Outcome.FAILED,
+            detail=f"{type(e).__name__}: {shorten(str(e), 140)}")]).exit_code
 
     print(f"\n{'=' * 60}")
     print("[INFO] 全部处理完成")
@@ -1853,16 +1978,21 @@ def add_server_time():
         print(f"  {icon} {remark_display} ({email_display}) | "
               f"{srv_count} 个服务器 | {r['status']} | {r.get('message', '')}")
 
-    # 有實質失敗就 exit 非 0 —— 之前永世 exit 0，所以 09-15~09-18 四個 run
-    # 全部「success」但一次都冇續到期，冇人為意。
-    fatal = [r for r in results if r["status"] in ("error", "cookie_invalid", "cf_blocked")]
-    if fatal:
-        print(f"\n[ERROR] 有 {len(fatal)} 個帳號未完成，exit 1")
-        sys.exit(1)
+    # 退出码交给 kit 按 Outcome 决定 —— 只有 FAILED 才是 1。
+    # 这里不调 report.finish()：本仓库是「每个账号处理完立刻发一条带截图的 TG」，
+    # run 级别再来一条总览就是重复；总览上面已经打过了。所以只取 exit_code。
+    report = _build_report(results)
     if not results:
+        # 原来这里有一条 `if not results: exit 1` —— 浏览器正常退出但一个账号都
+        # 没处理完（例如 CF 在启动阶段就拦下全部），不能当成功。
         print("\n[ERROR] 冇任何帳號被處理，exit 1")
-        sys.exit(1)
+        report.add_result(TargetResult(name="帳號", outcome=Outcome.FAILED,
+                                       detail="冇任何帳號被處理"))
+    if report.exit_code:
+        n_bad = sum(1 for r in report.results if r.outcome.is_error)
+        print(f"\n[ERROR] 有 {n_bad} 個目標未完成，exit 1")
+    return report.exit_code
 
 
 if __name__ == "__main__":
-    add_server_time()
+    sys.exit(add_server_time())

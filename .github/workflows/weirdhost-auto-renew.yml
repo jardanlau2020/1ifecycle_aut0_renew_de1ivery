@@ -1,13 +1,29 @@
 name: Weirdhost Auto Renew
+
+# 2026-10-02 改用 renew-kit 的 composite action（系统/Python 依赖、renewkit 注入、
+# 失败兜底统一走公共骨架），脚本本身也迁到了 renewkit（结果分类 + 退出码 +
+# Telegram）。迁移前这里是手写的一长串 step：apt 装 xvfb/xdotool/fonts、
+# setup-python、pip install，最后 xvfb-run 跑脚本。
+#
+# 2026-09-18 停排程的原因不变，别删这段：
+#   hub.weirdhost.xyz 上咗 Cloudflare 互動式驗證頁（「Performing security
+#   verification」+ 要人手剔 checkbox），實測三個出口全部 403：GHA runner
+#   （Azure）、NAS 容器（cf-ray -SIN）、Hetzner FI、Tencent SG，連真 Playwright
+#   瀏覽器都卡喺挑戰頁 —— 屬 human-only 步驟，唔應該自動化。
+#   自動續期在此前提下原理上不通：留低只會每日發假紅燈。改為靠人手續期 +
+#   qwenpaw cron 週一提醒（見 memory/2026-09-18.md）。
+#   所以这里**只能手动触发**：恢复 schedule 就是恢复「每日假红灯」。
+#
+# 要再测试就 Actions -> Weirdhost Auto Renew -> Run workflow。
+# 先勾 dry_run 验证 Cookie 还有没有效（只检查、不点击、不发 TG）。
 on:
-  # 2026-09-18 停排程：hub.weirdhost.xyz 上咗 Cloudflare 互動式驗證頁
-  # （「Performing security verification」+ 要人手剔 checkbox），實測三個出口
-  # 全部 403：GHA runner（Azure）、NAS 容器（cf-ray -SIN）、Hetzner FI、Tencent SG，
-  # 連真 Playwright 瀏覽器都卡喺挑戰頁 —— 屬 human-only 步驟，唔應該自動化。
-  # 自動續期在此前提下原理上不通：留低只會每日發假紅燈。改為靠人手續期 +
-  # qwenpaw cron 週一提醒（見 memory/2026-09-18.md）。
-  # 要再測試就手動 workflow_dispatch。
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "只检查不点击（用来验证 Cookie 还有没有效）"
+        type: boolean
+        default: false
+
 jobs:
   renew:
     name: 续期脚本
@@ -20,22 +36,8 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v7
 
-      - name: 设置 Python 环境
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.11"
-
-      - name: 安装系统依赖
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb x11-utils fonts-nanum fonts-noto-cjk xdotool scrot
-
-      - name: 安装 Python 依赖
-        run: |
-          python -m pip install --upgrade pip
-          pip install seleniumbase aiohttp pynacl
-
-      - name: 运行续期脚本
+      - name: 运行续期脚本（renew-kit）
+        uses: jardanlau2020/renew-kit/.github/actions/renew@v0.5.3
         env:
           WEIRDHOST_COOKIE_1: ${{ secrets.WEIRDHOST_COOKIE_1 }}
           WEIRDHOST_COOKIE_2: ${{ secrets.WEIRDHOST_COOKIE_2 }}
@@ -46,16 +48,24 @@ jobs:
           TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python scripts/weirdhost_renew.py
-
-      - name: 上传调试截图
-        if: always()
-        uses: actions/upload-artifact@v7
+          # 手动触发时可选 dry-run；不勾就是空串 → 正常点击
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
         with:
-          name: debug-screenshots
-          path: "*.png"
-          retention-days: 3
+          # 脚本用 SB(uc=True, headless=False) 开有头 Chromium —— Turnstile 的
+          # CDP pierce 与截图坐标都依赖真实 viewport，所以必须有 Xvfb；
+          # 屏幕尺寸沿用迁移前的 1920x1080x24（坐标是算出来的，别乱改）。
+          command: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python scripts/weirdhost_renew.py
+          script: scripts/weirdhost_renew.py
+          python-version: "3.11"
+          renewkit-ref: v0.5.3
+          apt-packages: xvfb x11-utils fonts-nanum fonts-noto-cjk xdotool scrot
+          pip-packages: seleniumbase aiohttp pynacl
+          # 面板截图（acc*_cf_blocked.png 等）落在仓库根，失败时上传排障
+          artifact-paths: "*.png"
+          artifact-name: weirdhost-screenshots
+          # 脚本自己按 Outcome 决定退出码，且每处理完一个账号就发一条 TG；
+          # action 的兜底通知只在「脚本非 0 退出」时触发，会和脚本的通知重复
+          notify-on-failure: "false"
 
       # 2026-09-18 起續期腳本失敗會 exit 1，清理步驟要 always() 先跑得到
       - name: 清理旧的工作流运行记录
