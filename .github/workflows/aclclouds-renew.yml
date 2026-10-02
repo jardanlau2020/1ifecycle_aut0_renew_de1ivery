@@ -1,0 +1,55 @@
+name: ACLClouds Auto Renew
+
+# 2026-10-02 新建。
+# 此前 README 的续期矩阵写着 ACLClouds「✅ 每 12 小时检查」，但仓库里根本没有
+# 这个 workflow —— 脚本 scripts/aclclouds_renew.py 一直是死代码，这平台从没在跑。
+# 本文件把它接上，并改用 renew-kit 的 composite action（依赖安装 / renewkit
+# 注入 / 失败兜底统一走公共骨架）。
+
+on:
+  schedule:
+    # 每 12 小时：04:20 / 16:20 UTC = 12:20 / 00:20 北京时间。
+    # 续期周期 4 天、窗口 ≤2 天，一天两查足够在窗口内命中；两班错开也是为了
+    # 万一某个时段面板抽风，12 小时后还有一次机会。
+    - cron: "20 4,16 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "只检查不点击（用来验证 Cookie 还有没有效）"
+        type: boolean
+        default: false
+
+jobs:
+  renew:
+    name: ACLClouds 续期
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      # 浏览器不再由 apt 装：ubuntu-latest 的 chromium-browser 是 snap 包装，
+      # 在容器里起不来（旧脚本硬编码 /usr/bin/chromium 就是栽在这）。
+      # 这里交给 Selenium Manager 自动获取 Chrome for Testing；
+      # 要指定自有 Chromium 就设 secret/vars ACLCLOUDS_CHROMIUM。
+      - name: 运行续期脚本（renew-kit）
+        uses: jardanlau2020/renew-kit/.github/actions/renew@v0.4.1
+        env:
+          ACLCLOUDS_SESSION_COOKIE: ${{ secrets.ACLCLOUDS_SESSION_COOKIE }}
+          # 未设该 secret 时回落到脚本内置默认 f743cf50
+          ACLCLOUDS_SERVER_ID: ${{ secrets.ACLCLOUDS_SERVER_ID || 'f743cf50' }}
+          ACLCLOUDS_WINDOW_DAYS: "2"
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          # 手动触发时可选 dry-run；排程触发时 inputs 为空 → 空串 → 正常点击
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+        with:
+          script: scripts/aclclouds_renew.py
+          python-version: "3.12"
+          renewkit-ref: v0.4.1
+          pip-packages: selenium
+          artifact-paths: "*.png"
+          artifact-name: aclclouds-screenshots
+          # 脚本自己在 report.finish() 里发 TG，且只有真失败才 exit 1；
+          # action 的兜底通知只在「脚本非 0 退出」时触发，会和脚本的通知重复。
+          notify-on-failure: "false"
