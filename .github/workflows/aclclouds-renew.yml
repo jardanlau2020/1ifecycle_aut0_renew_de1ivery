@@ -33,7 +33,7 @@ jobs:
       # 这里交给 Selenium Manager 自动获取 Chrome for Testing；
       # 要指定自有 Chromium 就设 secret/vars ACLCLOUDS_CHROMIUM。
       - name: 运行续期脚本（renew-kit）
-        uses: jardanlau2020/renew-kit/.github/actions/renew@v0.4.2
+        uses: jardanlau2020/renew-kit/.github/actions/renew@v0.5.3
         env:
           ACLCLOUDS_SESSION_COOKIE: ${{ secrets.ACLCLOUDS_SESSION_COOKIE }}
           # 未设该 secret 时回落到脚本内置默认 f743cf50
@@ -46,7 +46,7 @@ jobs:
         with:
           script: scripts/aclclouds_renew.py
           python-version: "3.12"
-          renewkit-ref: v0.4.2
+          renewkit-ref: v0.5.3
           pip-packages: selenium
           artifact-paths: "*.png"
           artifact-name: aclclouds-screenshots
