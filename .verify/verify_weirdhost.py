@@ -635,6 +635,51 @@ def section_b(c: Checks, mod) -> None:
         mod.sync_tg_notify_photo = saved_photo
         mod.DRY_RUN = False
 
+    # B13 原文只出现一次。
+    #   run #32 的日志里 `🎮 Weirdhost 續期（账号1）…` 连着出现两遍：一处是
+    #   send_account_notification 自己 print 的，一处是 kit 的 notify.send 在
+    #   DRY_RUN 下把原文整条打出来的。这里用**真** notify.send 数一遍。
+    #   （B12 把 notify.send 换成了 lambda，所以那个场景看不见这个重复。）
+    saved_notify = mod.notify.send
+    saved_photo = mod.sync_tg_notify_photo
+    saved_cfg = mod.notify.config
+    saved_env_dry = os.environ.get("DRY_RUN")
+    mod.sync_tg_notify_photo = lambda *a, **k: None
+    # 把 TG 配置清空：非演练那条分支会真的去发，本机不该发网络请求
+    mod.notify.config = lambda: ("", "")
+    result = {"remark": "acc1", "status": "success", "email": "a@b.c",
+              "servers": [{"server_id": "x", "status": "success"}]}
+    try:
+        # 注意：`notify.send` 里的闸门读的是 `renewkit.env.dry_run()`，也就是
+        # 现场看 `os.environ["DRY_RUN"]`；`mod.DRY_RUN` 只是 import 时拍下来的
+        # 一份快照。只改快照的话 kit 那边完全不知道在演练，会走「未配置」分支
+        # 把消息吞掉（第一版 B13.1 就是这么红的：got=0）。所以两边都要动。
+        mod.DRY_RUN = True
+        os.environ["DRY_RUN"] = "1"
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            mod.send_account_notification(result)
+        out = buf.getvalue()
+        c.eq("B13.1 DRY_RUN 下原文只出现一次", out.count("🎮 Weirdhost 續期"), 1)
+        c.check("B13.2 DRY_RUN 下带演练抬头", "DRY_RUN 演练" in out, out[:200])
+
+        mod.DRY_RUN = False
+        os.environ.pop("DRY_RUN", None)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            mod.send_account_notification(result)
+        out = buf.getvalue()
+        c.eq("B13.3 非 DRY_RUN 下原文出现一次", out.count("🎮 Weirdhost 續期"), 1)
+    finally:
+        mod.notify.send = saved_notify
+        mod.notify.config = saved_cfg
+        mod.sync_tg_notify_photo = saved_photo
+        mod.DRY_RUN = False
+        if saved_env_dry is None:
+            os.environ.pop("DRY_RUN", None)
+        else:
+            os.environ["DRY_RUN"] = saved_env_dry
+
 
 # ------------------------------------------------------------- [C] 静态检查
 

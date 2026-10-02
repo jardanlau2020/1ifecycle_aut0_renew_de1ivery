@@ -1811,7 +1811,6 @@ def send_account_notification(result):
     """
     servers = result.get("servers", [])
     message = build_account_summary(result)
-    print(message)
 
     screenshot = None
     for s in servers:
@@ -1823,9 +1822,17 @@ def send_account_notification(result):
     # 演練時唔發圖：notify.send 自己會處理 DRY_RUN，但 sendPhoto 唔經 kit，
     # 所以要喺呢度補一次閘門，否則 DRY_RUN=1 照樣會把截圖發出去。
     if screenshot and not DRY_RUN:
+        # sendPhoto 唔經 kit，原文唔會被打進 log，所以自己打一次
+        print(message)
         sync_tg_notify_photo(screenshot, message)
-    else:
-        notify.send(message)
+        return
+
+    # 走 notify.send：演練時佢會把原文整條打出來（帶「本輪本應發送」抬頭），
+    # 非演練時只打「已發送」/「未配置」——所以只有非演練時才需要喺呢度打原文，
+    # 否則同一段字會出現兩次。同 kit 裡 RenewReport.finish() 嘅處理一樣。
+    if not DRY_RUN:
+        print(message)
+    notify.send(message)
 
 
 # ============================================================
