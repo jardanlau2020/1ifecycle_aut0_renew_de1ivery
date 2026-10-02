@@ -32,7 +32,7 @@
 一律记 `TRANSIENT` 并 `exit 0`，不标红——日更 + 续期窗口足够容忍漏一次。
 
 `aclclouds-renew.yml` 直接复用了 renew-kit 的 composite action
-（`renew-kit/.github/actions/renew@v0.4.1`），依赖安装与 renewkit 注入无需各仓库重写。
+（`renew-kit/.github/actions/renew@v0.4.2`），依赖安装与 renewkit 注入无需各仓库重写。
 
 ## 自动续期原理
 
@@ -127,7 +127,7 @@ WEIRDHOST_COOKIE_1=*** python scripts/weirdhost_renew.py
 脚本依赖 `renewkit`：
 
 ```bash
-pip install "renewkit @ git+https://github.com/jardanlau2020/renew-kit@v0.4.1"
+pip install "renewkit @ git+https://github.com/jardanlau2020/renew-kit@v0.4.2"
 pip install selenium          # ACLClouds 需要
 ```
 
