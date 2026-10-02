@@ -748,8 +748,15 @@ def section_c(c: Checks, src: str, code: str) -> None:
                 RENEWKIT_REF_RE.search(wf) is not None, wf[:200])
         c.check("C24 workflow 指定了脚本",
                 re.search(r"script:\s*scripts/weirdhost_renew\.py", wf) is not None)
-        c.check("C25 workflow 传 TG_BOT_TOKEN", "TG_BOT_TOKEN:" in wf)
-        c.check("C26 workflow 传 TG_CHAT_ID", "TG_CHAT_ID:" in wf)
+        # 改名映射：kit 认的环境变量是 TG_*，本仓库的 secret 叫 TELEGRAM_*。
+        # 写错名字（比如直接 secrets.TG_BOT_TOKEN）不会报错，只是求值为空串，
+        # 通知静默跳过 —— aclclouds 那边就栽在这上面（run #39）。
+        c.check("C25 workflow 传 TG_BOT_TOKEN",
+                "TG_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}" in wf)
+        c.check("C26 workflow 传 TG_CHAT_ID",
+                "TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}" in wf)
+        c.check("C26b 不引用不存在的 secrets.TG_*",
+                "secrets.TG_BOT_TOKEN" not in wf and "secrets.TG_CHAT_ID" not in wf)
         c.check("C27 workflow 装 aiohttp/pynacl",
                 "aiohttp" in wf and "pynacl" in wf, "")
         c.check("C28 workflow 传 WEIRDHOST_COOKIE_1", "WEIRDHOST_COOKIE_1:" in wf)

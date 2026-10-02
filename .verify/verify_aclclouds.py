@@ -454,6 +454,20 @@ def main() -> int:
         c.check("失败产物含 *.png", "*.png" in wf)
         c.check("关掉 action 的兜底 TG（脚本自己已发，避免双推）",
                 re.search(r"notify-on-failure:\s*[\"']?false", wf) is not None)
+        # run #39 里 Cookie 失效的告警一条都没发出去，日志写着
+        #   「Telegram 未配置（TG_BOT_TOKEN / TG_CHAT_ID），跳过通知」
+        # 根因是 workflow 传 secrets.TG_BOT_TOKEN —— 本仓库没这个名字，
+        # 只有 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID。这里把「必须改名映射」
+        # 钉死，防止再有人照着 renewkit 的环境变量名去猜 secret 名。
+        c.check("TG 走 secret 改名映射（secrets.TELEGRAM_BOT_TOKEN）",
+                "secrets.TELEGRAM_BOT_TOKEN" in wf)
+        c.check("TG_CHAT_ID 走 secret 改名映射（secrets.TELEGRAM_CHAT_ID）",
+                "secrets.TELEGRAM_CHAT_ID" in wf)
+        # 只看非注释行：注释里为了说明坑，会原样写错名字，那是说明不是引用。
+        # （别用 `^\s*[^#\n]` —— `\s*` 会退让一格去匹配那个空格，注释行照样命中。）
+        _bad = [ln for ln in wf.splitlines()
+                if "secrets.TG_" in ln and not ln.lstrip().startswith("#")]
+        c.check("不再引用不存在的 secrets.TG_*", not _bad, str(_bad[:2]))
 
     c.section("[C3] README 与事实对得上")
     rd = README.read_text(encoding="utf-8") if README.is_file() else ""

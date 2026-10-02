@@ -39,8 +39,14 @@ jobs:
           # 未设该 secret 时回落到脚本内置默认 f743cf50
           ACLCLOUDS_SERVER_ID: ${{ secrets.ACLCLOUDS_SERVER_ID || 'f743cf50' }}
           ACLCLOUDS_WINDOW_DAYS: "2"
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          # 注意 secret 名：本仓库存的是 TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID，
+          # 而 renewkit.notify.config() 认的环境变量是 TG_BOT_TOKEN / TG_CHAT_ID，
+          # 所以这里必须**改名映射**。原来写 secrets.TG_BOT_TOKEN 是不存在的名字，
+          # 求值为空串 —— run #39 的
+          #   「Telegram 未配置（TG_BOT_TOKEN / TG_CHAT_ID），跳过通知」
+          # 就是这么来的：Cookie 失效的告警一条都没发出去。
+          TG_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           # 手动触发时可选 dry-run；排程触发时 inputs 为空 → 空串 → 正常点击
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
         with:
