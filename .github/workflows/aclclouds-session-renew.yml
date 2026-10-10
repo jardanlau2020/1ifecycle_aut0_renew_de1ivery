@@ -1,0 +1,56 @@
+name: ACLClouds Session Renew
+
+# 2026-10-09 新增：ACLClouds 續期嘅**session cookie 路線**（純 HTTP）。
+#
+# 背景：ACLClouds repo 嘅 API Key 路線實測 —— 卡片題答得啱、captcha_token
+# 攞到手，但帶住 token 打 renew 端點照樣 403 captcha_required（4 變體 × 3 輪
+# = 12 次全拒）。嗰邊結論係「閘綁登入 session 身份」。本 workflow 就用
+# 本倉庫已有嘅 session cookie 走返同一條 captcha protocol 驗證嗰個結論。
+#
+# 同時解決 Selenium 路線嘅盲點：aclclouds_renew.py 撳完 Renouveler 只等
+# 「剩餘增加」（12 秒），彈咗圖卡題佢睇唔到 → 每次都報「剩餘未增加」。
+#
+# 手動觸發；唔掛 cron（驗證階段，避免同現有兩條路線搶同一台機）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "只讀（唔提交續期、唔解 captcha）"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aclclouds-session-renew
+  cancel-in-progress: false
+
+jobs:
+  renew:
+    name: ACLClouds session 續期
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 檢出代碼
+        uses: actions/checkout@v7
+
+      - name: 配置 Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: 安裝依賴
+        # ddddocr = 站方卡片題 OCR（同 ACLClouds repo 用同一份 acl_captcha.py）
+        run: pip install requests ddddocr
+
+      - name: 執行 session 路線續期
+        env:
+          ACLCLOUDS_SESSION_COOKIE: ${{ secrets.ACLCLOUDS_SESSION_COOKIE }}
+          ACLCLOUDS_SERVER_ID: ${{ secrets.ACLCLOUDS_SERVER_ID || 'f743cf50' }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+        run: python scripts/aclclouds_session_renew.py
