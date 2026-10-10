@@ -32,6 +32,7 @@ import json
 import os
 import sys
 import time
+import urllib.parse
 
 import requests
 
@@ -75,12 +76,52 @@ def make_session() -> requests.Session:
     return s
 
 
+def _xsrf(s: requests.Session):
+    """由 cookie jar 攞 XSRF-TOKEN（URL 解碼後）——session 身份嘅 POST 冇佢會 419。"""
+    try:
+        for c in s.cookies:
+            if c.name == "XSRF-TOKEN":
+                return urllib.parse.unquote(c.value)
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def bootstrap_csrf(s: requests.Session) -> bool:
+    """GET 一個頁面叫站方發 XSRF-TOKEN cookie。
+
+    2026-10-10 實證：session cookie 路線第一次裸打 renew 回 **HTTP 419**
+    （Laravel CSRF token mismatch），唔係 403 captcha_required —— 因為 session
+    身份嘅 state-changing POST 要 CSRF，而 API Key 路線（Sanctum）唔使。
+    """
+    if _xsrf(s):
+        return True
+    for path in ("/", "/login"):
+        try:
+            s.get(BASE_URL + path, timeout=30)
+        except Exception as e:  # noqa: BLE001
+            log(f"   [csrf] GET {path} 異常: {e}")
+            continue
+        if _xsrf(s):
+            log(f"   [csrf] 已由站方取得 XSRF-TOKEN（GET {path}）")
+            return True
+    return False
+
+
 def api_get(s: requests.Session, path: str):
     return s.get(BASE_URL + path, timeout=30)
 
 
 def api_post(s: requests.Session, path: str, payload=None):
-    return s.post(BASE_URL + path, json=payload if payload is not None else {}, timeout=30)
+    """POST 一律帶 X-XSRF-TOKEN（同 acl_captcha.py 同一套做法）。"""
+    h = {}
+    tok = _xsrf(s)
+    if tok:
+        h["X-XSRF-TOKEN"] = tok
+        h["X-Requested-With"] = "XMLHttpRequest"
+        h.setdefault("Referer", BASE_URL + "/")
+    return s.post(BASE_URL + path, json=payload if payload is not None else {},
+                  headers=h or None, timeout=30)
 
 
 def find_server(s: requests.Session) -> dict | None:
@@ -126,6 +167,7 @@ def main() -> int:
         return 1
 
     s = make_session()
+    bootstrap_csrf(s)
 
     # 0. 驗證 cookie 真係認得（唔靠估）
     srv = find_server(s)
