@@ -1,0 +1,37 @@
+name: ACLClouds Traffic Diag
+
+# 2026-10-10 新增：錄站方前端續期時嘅真實請求。
+# 背景：API Key 路線同 session cookie 路線都係「解卡成功但 renew 403
+# captcha_required」→「閘綁 session 身份」假設被否證，改為直接觀察前端點做。
+# 只觀察：撳 Renouveler、收請求、截圖；唔解 captcha、唔提交答案。
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  diag:
+    name: ACLClouds 流量診斷
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: 安裝依賴
+        run: pip install selenium
+      - name: 跑診斷
+        env:
+          ACLCLOUDS_SESSION_COOKIE: ${{ secrets.ACLCLOUDS_SESSION_COOKIE }}
+          ACLCLOUDS_SERVER_ID: ${{ secrets.ACLCLOUDS_SERVER_ID || 'f743cf50' }}
+        run: python scripts/aclclouds_traffic_diag.py
+      - name: 上載截圖
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aclclouds-traffic-diag
+          path: "*.png"
+          if-no-files-found: ignore
