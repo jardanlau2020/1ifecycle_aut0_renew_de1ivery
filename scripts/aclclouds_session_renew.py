@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 
@@ -48,6 +50,16 @@ TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TG_BOT_TOKEN"
 TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID") or os.environ.get("TG_CHAT_ID") or ""
 UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36")
+
+# ── Cap（tiagozip/cap 自架 PoW）—— 2026-10-10 實證：續期嗰道閘就係佢 ──────────
+# 證據：瀏覽器流量診斷（run 38013798276）撳 Renouveler 之後，前端彈嘅係
+# 「Confirmation anti-robot … Vérifier que vous êtes humain」+ **Cap** 標記嘅
+# widget。即係之前一直餵嘅 `/auth/captcha` 卡片 token（renewal_gate context）
+# 根本唔係呢道閘要嘅嘢 —— 所以點都 403 captcha_required。
+# 解算器唔係新寫：同 login 探針用同一份 vendored cap_core/solve.mjs。
+CAP_SITEKEY = "235a82a3e3"
+CAP_API = f"https://cap.aclclouds.com/{CAP_SITEKEY}"
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def log(msg: str) -> None:
@@ -124,6 +136,46 @@ def api_post(s: requests.Session, path: str, payload=None):
                   headers=h or None, timeout=30)
 
 
+def solve_cap(s: requests.Session):
+    """Cap challenge → node PoW（cap_core/solve.mjs）→ redeem → 一次性 token。
+
+    同 probe_acl_login.py 同一條路（登入閘已實證通），唔係新寫 solver。
+    """
+    r = s.post(f"{CAP_API}/challenge", timeout=30)
+    r.raise_for_status()
+    chal = r.json()
+    n_ch = len(chal.get("challenges") or [])
+    if not n_ch:
+        log(f"   [cap] challenge 無 challenges: {str(chal)[:160]}")
+        return None
+    log(f"   [cap] challenge 攞到 {n_ch} 條 PoW 題")
+    with tempfile.TemporaryDirectory() as td:
+        inp, out = os.path.join(td, "c.json"), os.path.join(td, "s.json")
+        with open(inp, "w") as f:
+            json.dump(chal, f)
+        p = subprocess.run(["node", os.path.join(HERE, "..", "cap_core", "solve.mjs"),
+                            inp, out],
+                           capture_output=True, text=True, timeout=300, cwd=HERE)
+        if p.returncode != 0:
+            log(f"   [cap] solve.mjs rc={p.returncode}: {(p.stderr or p.stdout)[-300:]}")
+            return None
+        with open(out) as f:
+            sol = json.load(f)
+    r2 = s.post(f"{CAP_API}/redeem",
+                json={"token": sol["token"], "solutions": sol["solutions"]},
+                headers={"Content-Type": "application/json"}, timeout=30)
+    try:
+        j2 = r2.json()
+    except ValueError:
+        log(f"   [cap] redeem 非 JSON HTTP {r2.status_code}: {r2.text[:160]}")
+        return None
+    if not j2.get("success") or not j2.get("token"):
+        log(f"   [cap] redeem fail HTTP {r2.status_code}: {str(j2)[:160]}")
+        return None
+    log(f"   [cap] ✅ PoW 解完（{n_ch} 條），一次性 token 到手（len={len(str(j2['token']))}）")
+    return str(j2["token"])
+
+
 def find_server(s: requests.Session) -> dict | None:
     """GET /api/client（面板嘅伺服器清單）。"""
     r = api_get(s, "/api/client")
@@ -196,26 +248,35 @@ def main() -> int:
             tg(f"🚨 ACLClouds · 續期被拒（HTTP {r.status_code}，非 captcha）｜{body[:160]}")
             return 1
 
-        # 2. 用**同一個 session**解站方卡片題 → 帶 token 重發
-        log("🧩 走站方 renewal_gate captcha protocol（同一 session 身份）…")
-        tok = solve_captcha_api(s, BASE_URL, "renewal_gate", max_rounds=6)
-        if not tok:
-            log("❌ 解唔到 captcha")
-            tg("🚨 ACLClouds · 續期 captcha 解唔到，請人手處理")
+        # 2. 解**站方真正嗰道閘**：Cap（前端撳完 Renouveler 彈嘅就係佢）
+        log("🧩 解站方 Cap（cap.aclclouds.com）…")
+        cap_tok = solve_cap(s)
+
+        tried = []
+        if cap_tok:
+            tried.append(("Cap token（captcha_token）", {"captcha_token": cap_tok}))
+            tried.append(("Cap token（token）", {"token": cap_tok}))
+        # 兜底：舊卡片題 token（已證實多數唔認，但唔花額外成本）
+        log("🧩 同時試埋自家卡片題 token（renewal_gate）作兜底…")
+        card_tok = solve_captcha_api(s, BASE_URL, "renewal_gate", max_rounds=6)
+        if card_tok:
+            tried.append(("卡片 token（captcha_token）", {"captcha_token": card_tok}))
+
+        if not tried:
+            log("❌ 兩種 token 都攞唔到")
+            tg("🚨 ACLClouds · 續期驗證 token 攞唔到，請人手處理")
             return 1
 
-        for label, payload in (("captcha_token+captcha_answer",
-                                {"captcha_token": tok, "captcha_answer": "human"}),
-                               ("純 captcha_token", {"captcha_token": tok})):
+        for label, payload in tried:
             r2 = api_post(s, path, payload)
             log(f"② 帶 token 重發（{label}）-> HTTP {r2.status_code} | {r2.text[:200]}")
             if r2.status_code < 300:
                 r = r2
                 break
         else:
-            log("❌ session 身份帶 token 一樣被拒 → 閘唔淨係睇身份，收手（唔再空轉）")
-            tg("🚨 ACLClouds · session 身份帶 captcha token 仍被拒（HTTP 403）"
-               "｜閘唔淨係睇身份，要另找原因；請人手撳")
+            log("❌ 兩種 token 都被拒 → 收手（唔再空轉，避免撞 429）")
+            tg("🚨 ACLClouds · Cap 同卡片 token 都被拒（403 captcha_required）"
+               "｜請人手撳（面板撳 Renouveler → 勾 Cap → 完成）")
             return 1
 
     # 3. 核對：剩餘時間有冇真係變長

@@ -1,0 +1,6 @@
+{
+  "name": "cap-core-vendored",
+  "private": true,
+  "type": "module",
+  "description": "Vendored tiagozip/cap hashwx PoW core (see VENDORED.md). Only added so Node treats *.js as ESM."
+}
