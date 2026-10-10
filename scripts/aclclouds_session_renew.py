@@ -100,7 +100,8 @@ def find_server(s: requests.Session) -> dict | None:
     log(f"   共 {len(rows)} 台服務")
     for row in rows:
         attrs = (row or {}).get("attributes") or row or {}
-        sid = attrs.get("id") or row.get("id")
+        # 面板用 `identifier`（短 ID），唔係 `id`（實測 2026-10-10：用 id 會攞到 None）
+        sid = attrs.get("identifier") or attrs.get("uuid") or attrs.get("id") or row.get("id")
         name = attrs.get("name")
         exp = attrs.get("expires_at")
         log(f"   ▪️ {name} ({sid}) 到期 {exp} | can_renew={attrs.get('can_renew')}")
@@ -110,7 +111,8 @@ def find_server(s: requests.Session) -> dict | None:
     if rows:                                    # 對唔上就取第一台（單服帳號）
         row = rows[0]
         attrs = row.get("attributes") or row
-        return {"id": attrs.get("id") or row.get("id"), "name": attrs.get("name"),
+        return {"id": attrs.get("identifier") or attrs.get("uuid") or attrs.get("id") or row.get("id"),
+                "name": attrs.get("name"),
                 "expires_at": attrs.get("expires_at"), "can_renew": attrs.get("can_renew")}
     return None
 
